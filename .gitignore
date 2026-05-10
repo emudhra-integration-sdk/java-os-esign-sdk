@@ -1,0 +1,22 @@
+# Build output
+build/
+dist/
+
+# Temp signing files
+*.sig
+
+# Claude Code
+CLAUDE.md
+.claude/
+
+# Logs
+logs/
+
+# IDE files
+nbproject/private/
+*.class
+*.jar.orig
+
+# OS files
+.DS_Store
+Thumbs.db
