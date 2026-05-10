@@ -89,6 +89,14 @@ public class eSign {
         HASH
     }
 
+    public eSign(int SignatureContents) throws NoSuchAlgorithmException {
+        this(null, null, null, null, null, null, false, "", 0, 0, eSignSettings.LogType.AllLog, null, null, null, SignatureContents);
+    }
+
+    public eSign(int SignatureContents, boolean proxyreq, String proxyIp, int proxyPort) throws NoSuchAlgorithmException {
+        this(null, null, null, null, null, null, proxyreq, proxyIp, proxyPort, 0, eSignSettings.LogType.AllLog, null, null, null, SignatureContents);
+    }
+
     public eSign(String ASPID, String eSignURL, String eSignURLV2, String pfxpath, String password, String pfxAlias) throws NoSuchAlgorithmException {
         this(ASPID, eSignURL, eSignURLV2, pfxpath, password, pfxAlias, false, "", 0, 0, eSignSettings.LogType.AllLog, null, null, null, 0);
     }

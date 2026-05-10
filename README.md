@@ -22,27 +22,39 @@ A Java SDK for PDF digital signing. Supports two modes:
 
 ## Prerequisites
 
-- **Java 11** or higher
-- **PFX certificate** (.pfx) provided by eMudhra for XML signing
-- **ASP ID** (Application Service Provider ID) from eMudhra
-- **eSign gateway URLs** (v1 and v2 endpoints) from eMudhra
+**For all modes:**
+- Java 11 or higher
+- All dependency JARs from the `lib/` folder (see [Dependencies](#dependencies))
+
+**Additional requirements for eMudhra Gateway mode:**
+- PFX certificate file (.pfx) provided by eMudhra for XML signing
+- ASP ID (Application Service Provider ID) from eMudhra
+- eSign gateway URLs (v1 and v2 endpoints) from eMudhra
+
+**For Vendor-Agnostic mode:**
+- Your own signing service (HSM, TSP, or corporate CA) that accepts a SHA-256 hash and returns a PKCS7/CMS signature
+- No ASP ID, gateway URLs, or PFX certificate required
 
 ## Quick Start
+
+### Option 1 — eMudhra Gateway Signing (Aadhaar / PAN)
+
+The gateway flow runs in two phases. Phase 1 runs when the user initiates signing; Phase 2 runs in your callback handler after eMudhra redirects the user back.
 
 ```java
 import com.emudhra.esign.*;
 import java.util.ArrayList;
 
-// 1. Initialize the SDK
 eSign esignObj = new eSign(
     "YOUR_ASP_ID",
     "https://esigngateway.emudhra.com/eSignRequest",
     "https://esigngateway.emudhra.com/v2/eSignRequest",
-    "/path/to/certificate.pfx", "pfxPassword", "pfxAlias", 21000
+    "/path/to/certificate.pfx", "pfxPassword", "pfxAlias",
+    21000  // reserved bytes for the PKCS7 signature in the PDF
 );
 
-// 2. Build the signing input
-eSignInput input = eSignInputBuilder.init()
+ArrayList<eSignInput> inputs = new ArrayList<>();
+inputs.add(eSignInputBuilder.init()
     .setDocBase64(pdfBase64)
     .setDocInfo("Contract Agreement")
     .setDocURL("https://yourapp.com/doc.pdf")
@@ -52,24 +64,72 @@ eSignInput input = eSignInputBuilder.init()
     .setAppearanceType(eSign.AppearanceType.StandardSignature)
     .setPageTobeSigned(eSign.PageTobeSigned.Last)
     .setCoordinates(eSign.Coordinates.BottomRight)
-    .setCoSign(true)
-    .build();
+    .build());
 
-ArrayList<eSignInput> inputs = new ArrayList<>();
-inputs.add(input);
-
-// 3. Phase 1: Get the gateway parameter
+// Phase 1: pre-sign locally and get the gateway redirect parameter
 eSignServiceReturn result = esignObj.getGatewayParameter(
     inputs, "", "TXN-" + System.currentTimeMillis(),
     "https://yourapp.com/callback", "https://yourapp.com/redirect",
     "/tmp/esign", eSign.eSignAPIVersion.V2, eSign.AuthMode.OTP
 );
 
-// 4. Redirect user to eMudhra for authentication
-// 5. Phase 2: Handle callback and get signed document
+if (result.getStatus() == 1) {
+    String gatewayParam = result.getGatewayParameter();
+    String tempFile = result.getPreSignedTempFile();
+    // Redirect the user to eMudhra with gatewayParam; store tempFile for Phase 2
+}
+
+// Phase 2: called in your callback handler after eMudhra redirects back
+eSignServiceReturn signResult = esignObj.getSigedDocument(eSignResponseXML, tempFile);
+if (signResult.getStatus() == 1) {
+    String signedPdfBase64 = signResult.getReturnDocuments().get(0).getSignedDocument();
+}
 ```
 
-See the [full Quick Start guide](documentation/QUICK_START.md) for the complete two-phase flow with detailed explanations.
+### Option 2 — Vendor-Agnostic Signing (any HSM / TSP / corporate CA)
+
+No ASP ID, gateway URLs, or PFX certificate needed. The SDK handles PDF pre-processing and PKCS7 injection; you supply the signature from your own signing service.
+
+```java
+import com.emudhra.esign.*;
+import java.util.ArrayList;
+
+// No gateway credentials required
+eSign esignObj = new eSign(21000);
+
+ArrayList<eSignInput> inputs = new ArrayList<>();
+inputs.add(eSignInputBuilder.init()
+    .setDocBase64(pdfBase64)
+    .setDocInfo("Contract Agreement")
+    .setAppearanceType(eSign.AppearanceType.StandardSignature)
+    .setPageTobeSigned(eSign.PageTobeSigned.Last)
+    .setCoordinates(eSign.Coordinates.BottomRight)
+    .build());
+
+// Step 1: prepare PDFs and get SHA-256 hashes
+eSignServiceReturn prepared = esignObj.prepareDocuments(
+    inputs, "TXN-" + System.currentTimeMillis(), "/tmp/esign"
+);
+
+if (prepared.getStatus() == 1) {
+    String tempFile = prepared.getPreSignedTempFile();
+    String hash = prepared.getReturnDocuments().get(0).getDocumentHash(); // 64-char hex SHA-256
+
+    // Step 2: send hash to your signing service and receive PKCS7
+    String pkcs7Base64 = yourSigningService.sign(hash);
+
+    // Step 3: inject PKCS7 into the pre-signed PDF
+    ArrayList<String> pkcs7List = new ArrayList<>();
+    pkcs7List.add(pkcs7Base64);
+
+    eSignServiceReturn signed = esignObj.appendSignatures(tempFile, pkcs7List);
+    if (signed.getStatus() == 1) {
+        String signedPdfBase64 = signed.getReturnDocuments().get(0).getSignedDocument();
+    }
+}
+```
+
+See the [full Quick Start guide](documentation/QUICK_START.md) for all signing flows, appearance options, and the complete API reference.
 
 ## Documentation
 
