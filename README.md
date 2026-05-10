@@ -1,6 +1,9 @@
 # eSign Java SDK
 
-A Java SDK for integrating eMudhra's Aadhaar-based and PAN-based eSign service into your applications. Implements **two-phase remote digital signing** — PDFs are pre-signed locally (SHA-256 hash computed), sent to eMudhra's eSign gateway for user authentication (OTP/Fingerprint/IRIS/Face), and the returned PKCS7 signature is injected back into the PDF.
+A Java SDK for PDF digital signing. Supports two modes:
+
+- **eMudhra Gateway** — Aadhaar-based (V2) and PAN-based (V3) eSign via eMudhra's gateway. PDFs are pre-signed locally (SHA-256 hash computed), the user authenticates on eMudhra's portal (OTP/Fingerprint/IRIS/Face), and the returned PKCS7 signature is injected back into the PDF.
+- **Vendor-Agnostic** — Use `prepareDocuments()` to get the SHA-256 hash, sign it with any HSM, TSP, or corporate CA, then inject the resulting PKCS7 back using `appendSignatures()`. No dependency on eMudhra's gateway.
 
 ## Features
 
