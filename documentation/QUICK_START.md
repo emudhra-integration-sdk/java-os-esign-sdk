@@ -687,7 +687,15 @@ eSignInput input = new eSignInput("Document Info", "a1b2c3d4e5f6...", "https://e
 
 All constructors throw `NoSuchAlgorithmException`.
 
-> **`SignatureContents`** — the number of bytes reserved in the PDF for the PKCS7 signature blob. Use `21000` as a safe default. If your signing service produces larger signatures (e.g. with long certificate chains or timestamps), increase this value. Setting it too low will cause signature injection to fail.
+> **`SignatureContents`** — the number of bytes reserved inside the PDF as a placeholder for the PKCS7 signature blob. When a PDF is pre-signed, an empty block of this size is written into the file; the actual PKCS7 data is written into it after signing. The block must be large enough to hold the complete PKCS7 structure or injection will fail.
+>
+> | Value | When to use |
+> |-------|-------------|
+> | `0` | SDK uses the internal default of 21000 bytes |
+> | `21000` | Recommended explicit value — covers most standard signatures |
+> | `30000`–`40000` | Use if your signing service includes a full certificate chain or an embedded timestamp (TSA) |
+>
+> When in doubt, use `21000`.
 
 #### Vendor-Agnostic constructors (no eMudhra credentials needed)
 

@@ -35,6 +35,20 @@ A Java SDK for PDF digital signing. Supports two modes:
 - Your own signing service (HSM, TSP, or corporate CA) that accepts a SHA-256 hash and returns a PKCS7/CMS signature
 - No ASP ID, gateway URLs, or PFX certificate required
 
+## SignatureContents
+
+Every constructor accepts a `SignatureContents` integer. This is the **number of bytes reserved inside the PDF as a placeholder for the PKCS7 signature blob**.
+
+When a PDF is pre-signed, the SDK writes an empty byte block of this size into the file. After signing, the actual PKCS7 data is written into that block. The block must be large enough to hold the complete PKCS7 structure — if the signature is larger than the reserved space, injection will fail.
+
+| Value | When to use |
+|-------|-------------|
+| `0` | SDK uses the internal default of 21000 bytes |
+| `21000` | Recommended explicit value — covers most standard signatures |
+| `30000`–`40000` | Use if your signing service includes a full certificate chain or an embedded timestamp (TSA) |
+
+When in doubt, use `21000`. If you get an error during signature injection, increase the value.
+
 ## Quick Start
 
 ### Option 1 — eMudhra Gateway Signing (Aadhaar / PAN)
