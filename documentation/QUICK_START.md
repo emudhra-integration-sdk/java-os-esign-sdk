@@ -10,6 +10,7 @@ A Java SDK for eMudhra's Aadhaar-based and PAN-based eSign service. Implements *
 - [Signing Flows](#signing-flows)
   - [Aadhaar Signing (V2 API)](#aadhaar-signing-v2-api)
   - [PAN Signing (V3 API)](#pan-signing-v3-api)
+  - [Vendor-Agnostic Signing](#vendor-agnostic-signing)
 - [Signature Appearance Types](#signature-appearance-types)
 - [Page Selection and Coordinates](#page-selection-and-coordinates)
 - [Multi-Document Signing](#multi-document-signing)
@@ -29,7 +30,7 @@ A Java SDK for eMudhra's Aadhaar-based and PAN-based eSign service. Implements *
 
 ## Overview
 
-The signing process works in two phases:
+### eMudhra Gateway Flow (Aadhaar / PAN)
 
 ```
 Phase 1: getGatewayParameter()
@@ -43,7 +44,17 @@ Phase 2: User Authentication + getSigedDocument()
 
 2. **Phase 2** - The user authenticates on eMudhra's portal. eMudhra sends the PKCS7 signature back to your callback URL. You pass it to the SDK, which injects the signature into the pre-signed PDF and returns the signed document as Base64.
 
-> **New in this release:** After injecting the PKCS7 signature, the SDK now automatically patches the visual appearance of every signature field. The signed PDF will display the signer's name and masked Aadhaar number (e.g. `**** **** 1234`) extracted from the `UserX509Certificate` returned by the gateway — no extra configuration required.
+> **Note:** After injecting the PKCS7 signature, the SDK automatically patches the visual appearance of every signature field with the signer's name and masked Aadhaar number (e.g. `**** **** 1234`) extracted from the gateway-returned certificate.
+
+### Vendor-Agnostic Flow (any PKI / HSM / TSP)
+
+```
+prepareDocuments()  -->  SHA-256 hash per document
+Your signing service (HSM / TSP / corporate CA)  -->  PKCS7 per document
+appendSignatures()  -->  signed PDF per document
+```
+
+Use `prepareDocuments()` and `appendSignatures()` to decouple PDF processing from the signing authority. The SDK handles placeholder creation and PKCS7 injection; you supply the signatures from any source. See [Vendor-Agnostic Signing](#vendor-agnostic-signing).
 
 ---
 
@@ -600,6 +611,40 @@ if (signResult.getStatus() == 1) {
 
 ---
 
+## Vendor-Agnostic Signing
+
+Use `prepareDocuments()` and `appendSignatures()` when you want to sign with your own PKI infrastructure (HSM, third-party TSP, corporate CA) instead of eMudhra's eSign gateway. The SDK handles all PDF pre-processing and signature injection — you only need to sign the hash.
+
+```
+1. prepareDocuments()  →  SHA-256 hash per document + .sig temp file
+2. Your signing service (HSM / TSP / etc.)  →  PKCS7 per document
+3. appendSignatures()  →  signed PDF per document
+```
+
+```java
+// Step 1
+ArrayList<eSignInput> inputs = new ArrayList<>();
+inputs.add(eSignInputBuilder.init()
+    .setDocBase64(Base64.encodeToString(Files.readAllBytes(Paths.get("doc.pdf"))))
+    .setDocInfo("Contract")
+    .build());
+
+eSignServiceReturn prepared = esignObj.prepareDocuments(inputs, "TXN001", "/tmp/esign");
+// prepared.getReturnDocuments().get(0).getDocumentHash() → 64-char hex SHA-256
+
+// Step 2: sign with your own service
+String pkcs7Base64 = myHsm.signHash(prepared.getReturnDocuments().get(0).getDocumentHash());
+
+// Step 3
+ArrayList<String> pkcs7List = new ArrayList<>();
+pkcs7List.add(pkcs7Base64);
+
+eSignServiceReturn signed = esignObj.appendSignatures(prepared.getPreSignedTempFile(), pkcs7List);
+String signedPdf = signed.getReturnDocuments().get(0).getSignedDocument(); // Base64
+```
+
+---
+
 ## Hash-Based Signing
 
 If you already have the document hash (SHA-256) and don't want to send the full PDF:
@@ -800,6 +845,80 @@ eSignServiceReturn getEncryptedPath(String path)
 ```
 
 **Returns:** `eSignServiceReturn` with `getEnCryptedPath()` containing the encrypted path string.
+
+---
+
+#### `prepareDocuments()` - Vendor-agnostic Phase 1: prepare PDFs and get hashes
+
+Use this instead of `getGatewayParameter()` when you want to sign with your own PKI/HSM rather than eMudhra's gateway.
+
+```java
+eSignServiceReturn prepareDocuments(
+    ArrayList<eSignInput> inputs,
+    String transactionID,
+    String tempFolder
+)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `inputs` | ArrayList\<eSignInput\> | List of documents to sign (1-5) |
+| `transactionID` | String | Unique transaction ID (< 50 chars, auto-generated if empty) |
+| `tempFolder` | String | Folder path for storing pre-signed temp files |
+
+**Returns:** `eSignServiceReturn` with:
+- `getStatus() == 1` on success
+- `getPreSignedTempFile()` — path to the `.sig` file needed by `appendSignatures()`
+- `getReturnDocuments()` — each `ReturnDocument` has `getDocumentHash()` populated with the 64-char hex SHA-256 hash to send to your signing service
+
+---
+
+#### `appendSignatures()` - Vendor-agnostic Phase 2: inject externally-produced PKCS7
+
+```java
+eSignServiceReturn appendSignatures(
+    String preSignedTempFile,
+    ArrayList<String> pkcs7Base64List
+)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `preSignedTempFile` | String | Path to the `.sig` file from `prepareDocuments()` |
+| `pkcs7Base64List` | ArrayList\<String\> | Base64-encoded PKCS7 signatures, one per document, in the same order as `inputs` |
+
+**Returns:** `eSignServiceReturn` with `getReturnDocuments()` containing signed PDFs as Base64.
+
+**Example — vendor-agnostic signing flow:**
+
+```java
+// Step 1: prepare PDFs and get hashes
+ArrayList<eSignInput> inputs = new ArrayList<>();
+inputs.add(eSignInputBuilder.init()
+    .setDocBase64(pdfBase64)
+    .setDocInfo("Contract")
+    .build());
+
+eSignServiceReturn prepared = esignObj.prepareDocuments(inputs, "TXN001", "/tmp/esign");
+if (prepared.getStatus() != 1) {
+    // handle error
+}
+
+String tempFile = prepared.getPreSignedTempFile();
+String hash = prepared.getReturnDocuments().get(0).getDocumentHash(); // 64-char hex SHA-256
+
+// Step 2: send hash to your signing service (HSM, third-party TSP, etc.)
+String pkcs7Base64 = yourSigningService.sign(hash);
+
+// Step 3: inject the returned PKCS7 into the pre-signed PDF
+ArrayList<String> pkcs7List = new ArrayList<>();
+pkcs7List.add(pkcs7Base64);
+
+eSignServiceReturn signed = esignObj.appendSignatures(tempFile, pkcs7List);
+if (signed.getStatus() == 1) {
+    String signedPdfBase64 = signed.getReturnDocuments().get(0).getSignedDocument();
+}
+```
 
 ---
 

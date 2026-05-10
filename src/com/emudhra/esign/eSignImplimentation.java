@@ -725,6 +725,398 @@ public final class eSignImplimentation {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Vendor-agnostic flow: prepareDocuments + appendSignatures
+    // -----------------------------------------------------------------------
+
+    /**
+     * Phase 1 (vendor-agnostic): Prepares each PDF with a signature placeholder,
+     * computes SHA-256 hash, writes the .sig temp file and returns the hash per document.
+     * Does NOT contact any gateway — the caller is responsible for signing the hash
+     * with their own HSM / TSP / PKI and then calling appendSignatures().
+     */
+    protected eSignServiceReturn prepareDocuments(ArrayList<eSignInput> inputs,
+            String transactionID, String tempFolder, int SignatureContents) {
+        eSignServiceReturn serviceReturnObj = new eSignServiceReturn();
+        int contentEstimated = SignatureContents != 0 ? SignatureContents : 21000;
+        try {
+            if (inputs.size() > 5 || inputs.isEmpty()) {
+                serviceReturnObj.setErrorCode("ESS-100");
+                serviceReturnObj.setStatus(0);
+                serviceReturnObj.setErrorMessage("Minimum of 1 and Maximum of 5 Documents can be signed in a single request.");
+                return serviceReturnObj;
+            }
+            if (eSignUtility.isNullOrWhitespace(tempFolder)) {
+                serviceReturnObj.setErrorCode("ESS-103");
+                serviceReturnObj.setStatus(0);
+                serviceReturnObj.setErrorMessage("temp folder path cannot be empty");
+                return serviceReturnObj;
+            }
+            if (transactionID.length() >= 50) {
+                serviceReturnObj.setErrorCode("ESS-114");
+                serviceReturnObj.setStatus(0);
+                serviceReturnObj.setErrorMessage("transactionID should be less than 50 characters.");
+                return serviceReturnObj;
+            }
+
+            File dir = new File(tempFolder);
+            if (!dir.exists()) dir.mkdirs();
+
+            Calendar cal = Calendar.getInstance();
+            cal.add(Calendar.MINUTE, 0);
+            SimpleDateFormat tsFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
+            TimeZone timeZone = TimeZone.getTimeZone("IST");
+            tsFormat.setTimeZone(timeZone);
+            Date now = new Date(System.currentTimeMillis());
+            String timeStamp = tsFormat.format(now);
+
+            if (eSignUtility.isNullOrWhitespace(transactionID)) {
+                transactionID = java.util.UUID.randomUUID().toString().replace("-", "");
+            }
+            serviceReturnObj.setTransactionID(transactionID);
+            String tempFilePath = tempFolder + File.separator + transactionID + ".sig";
+            int count = 1;
+            ArrayList<ReturnDocument> returnDocuments = new ArrayList<>();
+
+            for (eSignInput input : inputs) {
+                if (input.getInputType() == eSign.InputType.PDF) {
+                    try {
+                        String hexHashDocument = "";
+                        String preSignedPdf = "";
+                        String cordinate = "";
+
+                        if (!input.getDocHash().isEmpty()) {
+                            hexHashDocument = input.getDocHash();
+                        } else {
+                            PageTobeSigned Page = input.getPage();
+                            String pagenumber = input.getPageNumbers();
+                            byte[] decodePDF = Base64.decode(input.getDocBase64());
+                            String pdfPwd = input.getPdfPassword();
+                            int numPages = pdfEngine.getPageCount(decodePDF, pdfPwd);
+
+                            if (input.getContentSearch() != null) {
+                                if (input.getContentSearch().getHeight() <= 0) {
+                                    serviceReturnObj.setErrorCode("ESS-121");
+                                    serviceReturnObj.setErrorMessage("Invalid height");
+                                    return serviceReturnObj;
+                                }
+                                if (input.getContentSearch().getWidth() <= 0) {
+                                    serviceReturnObj.setErrorCode("ESS-121");
+                                    serviceReturnObj.setErrorMessage("Invalid Width");
+                                    return serviceReturnObj;
+                                }
+                                if (input.getContentSearch().getOffset() == "") {
+                                    serviceReturnObj.setErrorCode("ESS-121");
+                                    serviceReturnObj.setErrorMessage("Offset cannot be empty");
+                                    return serviceReturnObj;
+                                }
+                                if (input.getContentSearch().getPosition() == null) {
+                                    serviceReturnObj.setErrorCode("ESS-121");
+                                    serviceReturnObj.setErrorMessage("Invalid Position");
+                                    return serviceReturnObj;
+                                }
+                                List<PageTextMatch> matches = pdfEngine.findText(decodePDF, input.getContentSearch().getSearchText(), pdfPwd);
+                                cordinate = buildCoordinateString(matches,
+                                        input.getContentSearch().getOffset(),
+                                        input.getContentSearch().getHeight(),
+                                        input.getContentSearch().getWidth(),
+                                        input.getContentSearch().getPosition());
+                                input.pageLevelCoordinates(cordinate);
+                                if (eSignUtility.isNullOrEmpty(cordinate)) {
+                                    serviceReturnObj.setErrorCode("ESS-120");
+                                    serviceReturnObj.setErrorMessage("Unable to find content");
+                                    return serviceReturnObj;
+                                }
+                            }
+
+                            if (input.getContentSearch() != null) {
+                                try {
+                                    input.pageLevelCoordinates(eSignUtility.validatePageLevelCordinate(input.getPageLevelCoordinates(), true, pdfEngine, decodePDF));
+                                } catch (Exception ex) {
+                                    serviceReturnObj.setErrorCode("ESS-120");
+                                    serviceReturnObj.setErrorMessage("Unable to find content");
+                                    return serviceReturnObj;
+                                }
+                            } else {
+                                try {
+                                    String pageLevelCoordinates = input.getPageLevelCoordinates();
+                                    if (Page.toString().equalsIgnoreCase("pagelevel")) {
+                                        pageLevelCoordinates = reformatPagelevelCoordinates(pageLevelCoordinates, numPages);
+                                        input.pageLevelCoordinates(eSignUtility.validatePageLevelCordinate(pageLevelCoordinates, false, pdfEngine, decodePDF));
+                                    }
+                                } catch (Exception ex) {
+                                    serviceReturnObj.setErrorCode("RDSA-120");
+                                    serviceReturnObj.setErrorMessage("Invalid Coordinate.");
+                                    return serviceReturnObj;
+                                }
+                            }
+
+                            if (eSignUtility.isNullOrEmpty(input.getPageLevelCoordinates())) {
+                                serviceReturnObj.setErrorCode("ESS-120");
+                                serviceReturnObj.setErrorMessage("Unable to find content");
+                                return serviceReturnObj;
+                            }
+
+                            if (null != input.getAppearanceType()) {
+                                switch (input.getAppearanceType()) {
+                                    case StandardSignature:
+                                        if (input.getSignatureFontSize() < -1) {
+                                            serviceReturnObj.setErrorCode("ESS-122");
+                                            serviceReturnObj.setErrorMessage("Invalid font size");
+                                            return serviceReturnObj;
+                                        }
+                                        break;
+                                    case SignatureImage:
+                                        if (input.getSignatureImage() == null) {
+                                            serviceReturnObj.setErrorCode("ESS-126");
+                                            serviceReturnObj.setErrorMessage("SignatureImage cannot be empty");
+                                            return serviceReturnObj;
+                                        }
+                                        break;
+                                    default:
+                                        break;
+                                }
+                            }
+
+                            int[] pages = null;
+                            ArrayList<Integer> ar;
+                            switch (Page) {
+                                case First: { pages = new int[]{1}; } break;
+                                case Last:  { pages = new int[]{numPages}; } break;
+                                case Even: {
+                                    ar = new ArrayList<>();
+                                    for (int i = 2; i <= numPages; i += 2) ar.add(i);
+                                    pages = new int[ar.size()];
+                                    for (int j = 0; j < ar.size(); j++) pages[j] = ar.get(j);
+                                } break;
+                                case Odd: {
+                                    ar = new ArrayList<>();
+                                    for (int i = 1; i <= numPages; i += 2) ar.add(i);
+                                    pages = new int[ar.size()];
+                                    for (int j = 0; j < ar.size(); j++) pages[j] = ar.get(j);
+                                } break;
+                                case All: {
+                                    pages = new int[numPages];
+                                    for (int i = 0; i < numPages; i++) pages[i] = i + 1;
+                                } break;
+                                case Specify: {
+                                    String[] Pagelevel = pagenumber.split(",");
+                                    pages = new int[Pagelevel.length];
+                                    for (int j = 0; j < Pagelevel.length; j++) pages[j] = Integer.parseInt(Pagelevel[j]);
+                                } break;
+                                default: break;
+                            }
+
+                            String coord = null;
+                            if (!Page.toString().equalsIgnoreCase("pagelevel")) {
+                                switch (input.getCoordinates()) {
+                                    case TopLeft:      coord = "25,725,145,785";   break;
+                                    case TopMiddle:    coord = "225,725,345,785";  break;
+                                    case TopRight:     coord = "425,725,545,785";  break;
+                                    case CenterLeft:   coord = "25,425,145,485";   break;
+                                    case CenterMiddle: coord = "225,425,345,485";  break;
+                                    case CenterRight:  coord = "425,425,545,485";  break;
+                                    case BottomLeft:   coord = "25,100,145,160";   break;
+                                    case BottomMiddle: coord = "225,100,345,160";  break;
+                                    case BottomRight:  coord = "425,100,545,160";  break;
+                                    default:           coord = "exception in case"; break;
+                                }
+                            }
+
+                            List<PdfRect> rects = new ArrayList<>();
+                            List<Integer> pageList = new ArrayList<>();
+
+                            if (Page.toString().equalsIgnoreCase("pagelevel")) {
+                                String pageLevelCoordinates = input.getPageLevelCoordinates();
+                                pageLevelCoordinates = reformatPagelevelCoordinates(pageLevelCoordinates, numPages);
+                                String[] pl = pageLevelCoordinates.split(";");
+                                pages = new int[pl.length];
+                                int y = 0;
+                                for (String pl1 : pl) {
+                                    if ("".equals(pl1.trim())) continue;
+                                    if (!pl1.contains("-")) pl1 = y + "-" + pl1;
+                                    String[] newpages = pl1.split("-");
+                                    String[] numbers = newpages[1].split(",");
+                                    float x11, y1, x2, y2;
+                                    try {
+                                        x11 = Float.valueOf(numbers[0]);
+                                        y1  = Float.valueOf(numbers[1]);
+                                        x2  = Float.valueOf(numbers[2]);
+                                        y2  = Float.valueOf(numbers[3]);
+                                        if (input.isRightOrigin()) {
+                                            PdfRect pageRect = pdfEngine.getPageSize(decodePDF, Integer.parseInt(newpages[0]), pdfPwd);
+                                            x11 = pageRect.getWidth() - Float.valueOf(numbers[2]);
+                                            x2  = pageRect.getWidth() - Float.valueOf(numbers[0]);
+                                        }
+                                    } catch (NumberFormatException ex) {
+                                        x11 = 425; y1 = 100; x2 = 555; y2 = 160;
+                                    }
+                                    pages[y] = Integer.parseInt(newpages[0]);
+                                    rects.add(new PdfRect(x11, y1, x2, y2));
+                                    pageList.add(pages[y]);
+                                    y++;
+                                }
+                            } else {
+                                String[] numbers1 = coord != null ? coord.split(",") : new String[]{"1"};
+                                float x11, y11, x21, y21;
+                                try {
+                                    x11 = Float.valueOf(numbers1[0]);
+                                    y11 = Float.valueOf(numbers1[1]);
+                                    x21 = Float.valueOf(numbers1[2]);
+                                    y21 = Float.valueOf(numbers1[3]);
+                                } catch (NumberFormatException ex) {
+                                    x11 = 425; y11 = 100; x21 = 555; y21 = 160;
+                                }
+                                PdfRect pdfRect = new PdfRect(x11, y11, x21, y21);
+                                for (int pg : pages) {
+                                    rects.add(pdfRect);
+                                    pageList.add(pg);
+                                }
+                            }
+
+                            AppearanceSpec appearanceSpec = buildAppearanceSpec(input, timeStamp, cal, tsFormat, timeZone, now);
+                            SignatureMetadata metadata = new SignatureMetadata(
+                                    input.getReason(), input.getLocation(), input.getSignedBy(), "eMudhra", cal);
+                            BorderSpec border = buildBorderSpec(input);
+                            SignatureFieldSpec fieldSpec = new SignatureFieldSpec(
+                                    rects, pageList, input.isCoSign(), appearanceSpec, metadata, border);
+
+                            PreSignResult preSignResult = pdfEngine.prepareSignature(decodePDF, fieldSpec, contentEstimated, pdfPwd);
+
+                            Security.addProvider(new emCastleProvider());
+                            MessageDigest digest = MessageDigest.getInstance("SHA256", "EM");
+                            digest.update(preSignResult.bytesToHash);
+                            byte[] hash = digest.digest();
+                            String hashData = new String(Base64.encode(hash));
+                            byte[] hashdata = Base64.decode(hashData);
+                            hexHashDocument = Hex.toHexString(hashdata);
+
+                            String preSignedBytes = new String(Base64.encode(preSignResult.preSignedPdfBytes), "UTF-8");
+                            preSignedPdf = preSignResult.placeholderPosition + "|" + preSignResult.outputBufferSize + "|" + preSignedBytes;
+                            preSignedPdf = org.emcastle.util.encoders.Base64.toBase64String(preSignedPdf.getBytes("utf-8"));
+                        }
+
+                        ReturnDocument returnDocument = new ReturnDocument("", count, input.getDocInfo(), input.getDocURL(),
+                                hexHashDocument, preSignedPdf, eSign.InputType.PDF, input.isPatchSignatureAppearance());
+                        returnDocuments.add(returnDocument);
+                        count++;
+                    } catch (Exception e) {
+                        LOGGER.warning("" + e);
+                        returnDocuments.add(new ReturnDocument(0, "Unable to generate appearance - " + e.getMessage(), "ESS-108", 0));
+                    }
+                } else if (input.getInputType() == eSign.InputType.HASH) {
+                    if (input.getDocHash().matches("^[a-fA-F0-9]{64}$")) {
+                        returnDocuments.add(new ReturnDocument("", count, input.getDocInfo(), input.getDocURL(),
+                                input.getDocHash(), "", eSign.InputType.HASH));
+                        count++;
+                    } else {
+                        returnDocuments.add(new ReturnDocument(0, "Only SHA-256 hash is allowed", "ESS-108", 0));
+                        count++;
+                    }
+                }
+            }
+
+            if (!eSignUtility.allDocumentHaveError(returnDocuments)) {
+                serviceReturnObj.setErrorCode("ESS-108");
+                serviceReturnObj.setStatus(0);
+                serviceReturnObj.setReturnValues(returnDocuments);
+                serviceReturnObj.setErrorMessage("Unable to generate appearance");
+                return serviceReturnObj;
+            }
+
+            String tempData = eSignUtility.generateTempTransactionData(returnDocuments);
+            try (PrintWriter writer = new PrintWriter(new File(tempFilePath))) {
+                writer.print(tempData);
+            }
+
+            serviceReturnObj.setPreSignedTempFile(tempFilePath);
+            serviceReturnObj.setReturnValues(returnDocuments);
+            serviceReturnObj.setStatus(1);
+            return serviceReturnObj;
+        } catch (Exception e) {
+            serviceReturnObj.setErrorCode("ESS-999");
+            serviceReturnObj.setStatus(0);
+            serviceReturnObj.setErrorMessage(e.getMessage());
+            return serviceReturnObj;
+        }
+    }
+
+    /**
+     * Phase 2 (vendor-agnostic): Injects externally-produced PKCS7 signatures
+     * into the pre-signed PDFs created by prepareDocuments().
+     * pkcs7Base64List must contain one base64-encoded PKCS7 per document,
+     * in the same order as the original inputs list.
+     */
+    protected eSignServiceReturn appendSignatures(String tempFilePath,
+            ArrayList<String> pkcs7Base64List, int SignatureContents) {
+        eSignServiceReturn serviceReturnObj = new eSignServiceReturn();
+        try {
+            File tempfile = new File(tempFilePath);
+            if (!tempfile.exists()) {
+                serviceReturnObj.setErrorCode("ESS-108");
+                serviceReturnObj.setErrorMessage("TempFile does not exist in path");
+                serviceReturnObj.setStatus(0);
+                return serviceReturnObj;
+            }
+            if (pkcs7Base64List == null || pkcs7Base64List.isEmpty()) {
+                serviceReturnObj.setErrorCode("ESS-100");
+                serviceReturnObj.setErrorMessage("pkcs7Base64List cannot be empty");
+                serviceReturnObj.setStatus(0);
+                return serviceReturnObj;
+            }
+
+            byte[] preSignedBytes;
+            try {
+                preSignedBytes = Files.readAllBytes(tempfile.toPath());
+            } catch (Exception e) {
+                serviceReturnObj.setErrorCode("ESS-108");
+                serviceReturnObj.setErrorMessage("Unable to read temp file");
+                serviceReturnObj.setStatus(0);
+                return serviceReturnObj;
+            }
+
+            ArrayList<ReturnDocument> returnDocuments = eSignUtility.getReturnDocumentsFromPreSignedPDFFile(preSignedBytes);
+            ArrayList<ReturnDocument> docsToReturn = new ArrayList<>();
+
+            for (int i = 0; i < returnDocuments.size(); i++) {
+                ReturnDocument returnDocument = returnDocuments.get(i);
+                if (!eSignUtility.isNullOrWhitespace(returnDocument.getErrorMessage())) {
+                    docsToReturn.add(returnDocument);
+                    continue;
+                }
+                if (i >= pkcs7Base64List.size()) {
+                    docsToReturn.add(new ReturnDocument(0, "ESS-113", "No PKCS7 provided for document " + (i + 1), returnDocument.getDocId()));
+                    continue;
+                }
+                String pkcs7Base64 = pkcs7Base64List.get(i);
+                try {
+                    if (eSignUtility.isNullOrWhitespace(returnDocument.getPreSignedDocument())) {
+                        returnDocument.setSignedData(pkcs7Base64);
+                        returnDocument.setStatus(1);
+                    } else {
+                        byte[] array = signClose(pkcs7Base64, returnDocument.getPreSignedDocument(), SignatureContents);
+                        String pdfBase64 = org.emcastle.util.encoders.Base64.toBase64String(array);
+                        returnDocument.setSignedDocument(pdfBase64);
+                        returnDocument.setStatus(1);
+                    }
+                    docsToReturn.add(returnDocument);
+                } catch (Exception e) {
+                    docsToReturn.add(new ReturnDocument(0, "ESS-112", "Unable to append signature to document", returnDocument.getDocId()));
+                }
+            }
+
+            serviceReturnObj.setPreSignedTempFile(tempFilePath);
+            serviceReturnObj.setReturnValues(docsToReturn);
+            serviceReturnObj.setStatus(1);
+            return serviceReturnObj;
+        } catch (Exception e) {
+            serviceReturnObj.setErrorCode("ESS-999");
+            serviceReturnObj.setStatus(0);
+            serviceReturnObj.setErrorMessage(e.getMessage());
+            return serviceReturnObj;
+        }
+    }
+
     protected eSignServiceReturn getStatus(String transactionId) {
         eSignServiceReturn serviceReturnObj = new eSignServiceReturn();
         try {

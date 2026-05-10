@@ -190,6 +190,16 @@ public class eSign {
         return impl.isValidPdf(docBase64);
     }
 
+    public eSignServiceReturn prepareDocuments(ArrayList<eSignInput> inputs, String transactionID, String tempFolder) {
+        eSignImplimentation impl = new eSignImplimentation(pfxpath, password, pfxAlias, proxyIp, proxyPort, proxyreq);
+        return impl.prepareDocuments(inputs, transactionID, tempFolder, SignatureContents);
+    }
+
+    public eSignServiceReturn appendSignatures(String preSignedTempFile, ArrayList<String> pkcs7Base64List) {
+        eSignImplimentation impl = new eSignImplimentation(pfxpath, password, pfxAlias, proxyIp, proxyPort, proxyreq);
+        return impl.appendSignatures(preSignedTempFile, pkcs7Base64List, SignatureContents);
+    }
+
     private static String getSha256(String input) throws NoSuchAlgorithmException {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         byte[] hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));

@@ -6,15 +6,16 @@ A Java SDK for integrating eMudhra's Aadhaar-based and PAN-based eSign service i
 
 - **Aadhaar Signing (V2 API)** — OTP, Fingerprint, IRIS, and Face authentication
 - **PAN Signing (V3 API)** — Username, Mobile, or PAN-based authentication
+- **Vendor-Agnostic Signing** — `prepareDocuments()` + `appendSignatures()` lets you use any HSM, TSP, or corporate CA instead of eMudhra's gateway
 - **Multiple Signature Appearances** — Standard, Image, OneLiner, Advanced, ColoredGraphic, BackgroundImage
 - **Multi-Document Signing** — Sign up to 5 documents in a single request
 - **Hash-Based Signing** — Sign using pre-computed SHA-256 hashes without sending the full PDF
 - **Flexible Placement** — Named coordinates, page-level coordinates, or content-search-based positioning
 - **Co-Signing Support** — Add multiple signatures to the same document
+- **Signature Appearance Patching** — Automatically updates the visual appearance of signed signature fields with the signer's name and masked Aadhaar number extracted from the gateway-returned certificate
 - **Bank KYC** — Perform Bank KYC verification through eMudhra
 - **Configurable Logging** — File-based logging with rotation and multiple log levels
 - **Proxy Support** — HTTP proxy with optional authentication
-- **NEW: Signature Appearance Patching** — Automatically updates the visual appearance of signed signature fields with the signer's name and masked Aadhaar number extracted from the gateway-returned certificate
 
 ## Prerequisites
 

@@ -3,7 +3,7 @@ import com.emudhra.esign.eSign;
 import com.emudhra.esign.eSignInput;
 import com.emudhra.esign.eSignInputBuilder;
 import com.emudhra.esign.eSignServiceReturn;
-import esign.text.pdf.codec.Base64;
+import java.util.Base64;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -35,12 +35,12 @@ public class Test {
 
 
         byte[] array_1 = Files.readAllBytes(new File(pdfPath_1).toPath());
-//        String pdfBase64_1 = Base64.encodeBytes(array_1);
+//        String pdfBase64_1 = Base64.getEncoder().encodeToString(array_1);
         
         byte[] image = Files.readAllBytes(new File("D:\\env\\RSDS\\image.jpg").toPath());
-        String imageBase64 = Base64.encodeBytes(image);
+        String imageBase64 = Base64.getEncoder().encodeToString(image);
         eSignInput bulider = eSignInputBuilder.init()
-                .setDocBase64(Base64.encodeBytes(array_1))
+                .setDocBase64(Base64.getEncoder().encodeToString(array_1))
                 .setPdfPassword("a")
                 .setAppearanceType(eSign.AppearanceType.StandardSignature)
 //                .setSignatureImage(imageBase64)
