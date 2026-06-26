@@ -26,7 +26,7 @@
                target="11"
                encoding="UTF-8"
                includeantruntime="false"
-               excludes="Test.java">
+               excludes="Test.java,TestHarness.java">
             <classpath refid="compile.classpath"/>
         </javac>
         <!-- Copy non-Java resources (PDFBox glyph lists, ICC profiles, CMap tables, etc.) -->
