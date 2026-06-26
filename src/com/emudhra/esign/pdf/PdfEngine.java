@@ -17,6 +17,11 @@ import org.apache.batik.gvt.GraphicsNode;
 import org.apache.batik.util.XMLResourceDescriptor;
 
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.cos.COSArray;
+import org.apache.pdfbox.cos.COSBase;
+import org.apache.pdfbox.cos.COSDictionary;
+import org.apache.pdfbox.cos.COSInteger;
+import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
@@ -29,6 +34,7 @@ import org.apache.pdfbox.pdmodel.interactive.digitalsignature.visible.PDVisibleS
 import org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm;
 import org.apache.pdfbox.pdmodel.interactive.form.PDField;
 import org.apache.pdfbox.pdmodel.interactive.form.PDSignatureField;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationWidget;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAppearanceDictionary;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAppearanceStream;
@@ -138,6 +144,9 @@ public final class PdfEngine {
                                           int contentEstimated,
                                           String password) throws IOException {
         try (PDDocument doc = loadDoc(pdfBytes, password)) {
+            // All-or-nothing: validate the full multi-page spec BEFORE any mutation.
+            validateMultiPageSpec(spec, doc.getNumberOfPages());
+
             PDSignature sig = new PDSignature();
             sig.setFilter(PDSignature.FILTER_ADOBE_PPKLITE);
             sig.setSubFilter(PDSignature.SUBFILTER_ADBE_PKCS7_DETACHED);
@@ -166,18 +175,8 @@ public final class PdfEngine {
             boolean useNativeAppearance = isStandard || isBackgroundImage || isSignatureImage || isAdvanceSignature;
 
             if (!spec.rects.isEmpty()) {
+                // First widget's page; the remaining widgets are attached during de-merge.
                 options.setPage(spec.pages.get(0) - 1);
-                if (!useNativeAppearance) {
-                    // Remaining modes (OneLiner, ColoredGraphic): PNG-based template
-                    try {
-                        InputStream vis = buildAppearanceTemplate(doc, spec, pdfBytes);
-                        if (vis != null) {
-                            options.setVisualSignature(vis);
-                        }
-                    } catch (Exception e) {
-                        // appearance failure is non-fatal; falls back to invisible
-                    }
-                }
             }
 
             doc.addSignature(sig, options);
@@ -188,16 +187,56 @@ public final class PdfEngine {
                 setMDPPermission(doc, sig, 1);
             }
 
-            // Build native /AP stream after addSignature creates the widget
+            // De-merge the single widget addSignature created into N per-page widgets that
+            // share ONE /V (one digest/PKCS7/ByteRange), then build the active mode's
+            // appearance on every widget. /V stays only on the field; kids stay pure widgets.
             if (!spec.rects.isEmpty()) {
-                if (isStandard) {
-                    buildStandardTextAppearance(doc, sig, spec.appearance, spec.rects.get(0), spec.border);
-                } else if (isBackgroundImage) {
-                    buildNativeImageAppearance(doc, sig, spec.appearance, spec.rects.get(0), true, spec.border);
-                } else if (isSignatureImage) {
-                    buildNativeImageAppearance(doc, sig, spec.appearance, spec.rects.get(0), false, spec.border);
-                } else if (isAdvanceSignature) {
-                    buildNativeAdvanceAppearance(doc, sig, spec.appearance, spec.rects.get(0), spec.border);
+                PDSignatureField field = findSignatureField(doc, sig);
+                if (field != null) {
+                    List<PDAnnotationWidget> widgets = splitIntoWidgets(doc, field, spec);
+                    PdfRect r0 = spec.rects.get(0);
+
+                    // Build the active mode's shared resource ONCE (decode/rasterize a single time).
+                    PDImageXObject sharedImg = null;
+                    PDImageXObject sharedAdv = null;
+                    PDImageXObject sharedTpl = null;
+                    try {
+                        if (isBackgroundImage || isSignatureImage) {
+                            if (spec.appearance != null && spec.appearance.imageBytes != null
+                                    && spec.appearance.imageBytes.length > 0) {
+                                sharedImg = PDImageXObject.createFromByteArray(
+                                        doc, spec.appearance.imageBytes, "sig");
+                            }
+                        } else if (isAdvanceSignature) {
+                            sharedAdv = buildAdvanceXObjectOnce(doc, spec.appearance, r0);
+                        } else if (!useNativeAppearance) {
+                            // OneLiner / ColoredGraphic: Java2D raster template, built once.
+                            sharedTpl = buildRasterTemplateOnce(doc, spec.appearance, r0);
+                        }
+                    } catch (Exception e) {
+                        // shared-resource build failure is non-fatal; widgets fall back gracefully
+                    }
+
+                    for (int i = 0; i < widgets.size(); i++) {
+                        PDAnnotationWidget widget = widgets.get(i);
+                        PdfRect rect = spec.rects.get(i);
+                        // Per-widget appearance failure must not abort the others or the signature.
+                        try {
+                            if (isStandard) {
+                                buildStandardTextAppearance(doc, widget, spec.appearance, rect, spec.border);
+                            } else if (isBackgroundImage) {
+                                buildNativeImageAppearance(doc, widget, spec.appearance, rect, true, spec.border, sharedImg);
+                            } else if (isSignatureImage) {
+                                buildNativeImageAppearance(doc, widget, spec.appearance, rect, false, spec.border, sharedImg);
+                            } else if (isAdvanceSignature) {
+                                buildNativeAdvanceAppearance(doc, widget, spec.appearance, rect, spec.border, sharedAdv);
+                            } else {
+                                buildNativeRasterAppearance(doc, widget, rect, spec.border, sharedTpl);
+                            }
+                        } catch (Exception e) {
+                            // single-widget appearance failure is non-fatal
+                        }
+                    }
                 }
             }
 
@@ -275,15 +314,8 @@ public final class PdfEngine {
 
                 List<PDAnnotationWidget> widgets = sigField.getWidgets();
                 if (widgets == null || widgets.isEmpty()) continue;
-                PDAnnotationWidget widget = widgets.get(0);
-                PDRectangle rect = widget.getRectangle();
-                if (rect == null) continue;
 
-                float w = rect.getWidth();
-                float h = rect.getHeight();
-                if (w <= 0 || h <= 0) continue;
-
-                // Build appearance text
+                // Build appearance text (shared across all widgets of this field)
                 String reason = sig != null ? sig.getReason() : null;
                 Calendar signDate = sig != null ? sig.getSignDate() : null;
                 String dateStr = "";
@@ -291,13 +323,26 @@ public final class PdfEngine {
                     dateStr = new SimpleDateFormat("dd-MMM-yyyy HH:mm:ss").format(signDate.getTime());
                 }
 
-                // Create the new Form XObject appearance
-                PDAppearanceStream ap = buildTextAppearance(doc, w, h,
-                        signerName, aadhaarSuffix, reason, dateStr);
+                // Multi-page: rewrite the /AP /N of EVERY widget, not just the first.
+                // Pre-existing DocMDP (S3) post-sign-patch hazard preserved, not worsened
+                // (AP-only rewrite, no new structure added).
+                for (PDAnnotationWidget widget : widgets) {
+                    PDRectangle rect = widget.getRectangle();
+                    if (rect == null) continue;
 
-                PDAppearanceDictionary apDict = new PDAppearanceDictionary();
-                apDict.setNormalAppearance(ap);
-                widget.setAppearance(apDict);
+                    float w = rect.getWidth();
+                    float h = rect.getHeight();
+                    if (w <= 0 || h <= 0) continue;
+
+                    // Create the new Form XObject appearance
+                    PDAppearanceStream ap = buildTextAppearance(doc, w, h,
+                            signerName, aadhaarSuffix, reason, dateStr);
+
+                    PDAppearanceDictionary apDict = new PDAppearanceDictionary();
+                    apDict.setNormalAppearance(ap);
+                    widget.setAppearance(apDict);
+                    widget.getCOSObject().setNeedToBeUpdated(true);
+                }
             }
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -396,6 +441,219 @@ public final class PdfEngine {
     }
 
     // -----------------------------------------------------------------------
+    // Multi-page de-merge: ONE field + N widgets sharing ONE /V
+    // -----------------------------------------------------------------------
+
+    /**
+     * Validates the entire multi-page spec up-front so prepareSignature is all-or-nothing
+     * (no partial mutation of the document on a bad request).
+     */
+    private void validateMultiPageSpec(SignatureFieldSpec spec, int pageCount) throws IOException {
+        if (spec == null || spec.pages == null || spec.rects == null) {
+            throw new IOException("Invalid signature spec: spec/pages/rects must not be null");
+        }
+        if (spec.pages.size() != spec.rects.size()) {
+            throw new IOException("Invalid signature spec: pages.size (" + spec.pages.size()
+                    + ") != rects.size (" + spec.rects.size() + ")");
+        }
+        int n = spec.pages.size();
+        // No upper cap on page count: the pre-change path signed large 'All' docs successfully
+        // (appearance on page 1), and resource-sharing (one shared XObject/SVG/template reused
+        // across all widgets) mitigates the memory concern — a large 'All' must produce N
+        // widgets, not a hard failure.
+        for (int i = 0; i < n; i++) {
+            Integer page = spec.pages.get(i);
+            if (page == null || page < 1 || page > pageCount) {
+                throw new IOException("Signature page out of range: " + page
+                        + " (document has " + pageCount + " page(s))");
+            }
+            PdfRect r = spec.rects.get(i);
+            if (r == null || r.getWidth() <= 0 || r.getHeight() <= 0) {
+                throw new IOException("Invalid signature rectangle at index " + i + ": " + r);
+            }
+        }
+    }
+
+    /**
+     * Locates the PDSignatureField that owns the given PDSignature by COS identity.
+     * Mirrors the lookup idiom previously inlined in the appearance helpers.
+     */
+    private PDSignatureField findSignatureField(PDDocument doc, PDSignature sig) throws IOException {
+        PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm(null);
+        if (acroForm == null) return null;
+        for (PDField field : acroForm.getFields()) {
+            if (!(field instanceof PDSignatureField)) continue;
+            PDSignatureField sf = (PDSignatureField) field;
+            PDSignature sfSig = sf.getSignature();
+            if (sfSig != null && sfSig.getCOSObject().equals(sig.getCOSObject())) {
+                return sf;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * De-merges the single field+widget dictionary that addSignature created into a field
+     * with N pure /Kids widget annotations — one per selected page — all sharing the field's
+     * single /V. /V and /FT remain ONLY on the field dict; the kids carry no /V, /FT or shared
+     * digest. This is what makes one signature (one digest/PKCS7/ByteRange) appear on N pages.
+     */
+    private List<PDAnnotationWidget> splitIntoWidgets(PDDocument doc, PDSignatureField field,
+            SignatureFieldSpec spec) throws IOException {
+        COSDictionary fd = field.getCOSObject();
+        int n = spec.pages.size();
+
+        // Keys that belong to the widget (annotation), not the field — peeled onto kid 0.
+        COSName[] WKEYS = {
+            COSName.SUBTYPE, COSName.RECT, COSName.AP, COSName.P, COSName.F,
+            COSName.getPDFName("MK"), COSName.getPDFName("BS")
+        };
+
+        // --- Widget 0: move the widget keys off the merged field dict into a pure kid ---
+        COSDictionary kid0 = new COSDictionary();
+        for (COSName k : WKEYS) {
+            COSBase v = fd.getItem(k);
+            if (v != null) {
+                kid0.setItem(k, v);
+                fd.removeItem(k);
+            }
+        }
+        kid0.setItem(COSName.TYPE, COSName.ANNOT);
+        kid0.setItem(COSName.SUBTYPE, COSName.WIDGET);
+        kid0.setItem(COSName.PARENT, fd);
+
+        // The parent is now a pure field (/FT,/T,/V,/Ff,/Kids) — drop the leftover /Type=/Annot
+        // that the merged field+widget dict carried so it is no longer mislabelled as an annotation.
+        fd.removeItem(COSName.TYPE);
+
+        PDAnnotationWidget w0 = new PDAnnotationWidget(kid0);
+        PdfRect r0 = spec.rects.get(0);
+        w0.setRectangle(new PDRectangle(r0.llx, r0.lly, r0.getWidth(), r0.getHeight()));
+        PDPage page0 = doc.getPage(spec.pages.get(0) - 1);
+        kid0.setItem(COSName.P, page0.getCOSObject());
+
+        COSArray kids = new COSArray();
+        kids.add(kid0);
+        List<PDAnnotationWidget> out = new ArrayList<>();
+        out.add(w0);
+        // Replace the merged field ref on page 0 with the de-merged widget.
+        attachWidgetToPage(doc, page0, w0, fd);
+
+        // --- Widgets 1..n-1: brand-new pure widget dicts (no /V, no /FT, no /AP yet) ---
+        for (int i = 1; i < n; i++) {
+            COSDictionary kid = new COSDictionary();
+            kid.setItem(COSName.TYPE, COSName.ANNOT);
+            kid.setItem(COSName.SUBTYPE, COSName.WIDGET);
+            kid.setItem(COSName.PARENT, fd);
+            kid.setItem(COSName.F, COSInteger.get(4)); // Print flag
+
+            PDAnnotationWidget wi = new PDAnnotationWidget(kid);
+            PdfRect ri = spec.rects.get(i);
+            wi.setRectangle(new PDRectangle(ri.llx, ri.lly, ri.getWidth(), ri.getHeight()));
+            PDPage pagei = doc.getPage(spec.pages.get(i) - 1);
+            kid.setItem(COSName.P, pagei.getCOSObject());
+
+            kids.add(kid);
+            out.add(wi);
+            attachWidgetToPage(doc, pagei, wi, null);
+        }
+
+        fd.setItem(COSName.KIDS, kids);
+        fd.setNeedToBeUpdated(true);
+        return out;
+    }
+
+    /**
+     * Adds a widget to a page's /Annots (keeping /Annots a DIRECT object), optionally first
+     * removing a prior reference (the merged field dict) by COS identity. Marks both the page
+     * and the widget for incremental update.
+     */
+    private void attachWidgetToPage(PDDocument doc, PDPage page, PDAnnotationWidget widget,
+            COSDictionary removeRef) throws IOException {
+        List<PDAnnotation> annots = page.getAnnotations();
+        if (removeRef != null) {
+            annots.removeIf(a -> a.getCOSObject() == removeRef);
+        }
+        boolean present = false;
+        for (PDAnnotation a : annots) {
+            if (a.getCOSObject() == widget.getCOSObject()) { present = true; break; }
+        }
+        if (!present) annots.add(widget);
+        page.setAnnotations(annots);
+        page.getCOSObject().setNeedToBeUpdated(true);
+        widget.getCOSObject().setNeedToBeUpdated(true);
+    }
+
+    /**
+     * Builds the advanceSignature background image XObject ONCE (SVG rasterised at 2× or raster
+     * decoded directly), so all N widgets share a single decode. Returns null if no image.
+     */
+    private PDImageXObject buildAdvanceXObjectOnce(PDDocument doc, AppearanceSpec ap, PdfRect r0)
+            throws IOException {
+        if (ap == null) return null;
+        boolean hasSvg = ap.advanceImageType == ImageType.SVG
+                && ap.advanceSvgBytes != null && ap.advanceSvgBytes.length > 0;
+        boolean hasImage = ap.imageBytes != null && ap.imageBytes.length > 0;
+        if (hasSvg) {
+            byte[] png = rasterizeSvgToPng(ap.advanceSvgBytes,
+                    (int) (r0.getWidth() * 2), (int) (r0.getHeight() * 2));
+            return png != null ? PDImageXObject.createFromByteArray(doc, png, "svg") : null;
+        } else if (hasImage) {
+            return PDImageXObject.createFromByteArray(doc, ap.imageBytes, "adv");
+        }
+        return null;
+    }
+
+    /**
+     * Renders the OneLiner/ColoredGraphic Java2D appearance ONCE to a PNG-backed XObject that
+     * every widget reuses (drawn scaled into each widget's BBox). Non-fatal: returns null on failure.
+     */
+    private PDImageXObject buildRasterTemplateOnce(PDDocument doc, AppearanceSpec ap, PdfRect r0) {
+        try {
+            int w = Math.max(10, (int) r0.getWidth());
+            int h = Math.max(10, (int) r0.getHeight());
+            BufferedImage img = renderAppearance(ap, w, h);
+            ByteArrayOutputStream png = new ByteArrayOutputStream();
+            ImageIO.write(img, "PNG", png);
+            return PDImageXObject.createFromByteArray(doc, png.toByteArray(), "tpl");
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Per-widget appearance for the raster (OneLiner/ColoredGraphic) modes: white base, the
+     * shared template image scaled into the widget BBox, then the optional border.
+     */
+    private void buildNativeRasterAppearance(PDDocument doc, PDAnnotationWidget widget,
+            PdfRect rect, com.emudhra.esign.pdf.model.BorderSpec border,
+            PDImageXObject tpl) throws IOException {
+        float w = rect.getWidth();
+        float h = rect.getHeight();
+        widget.setRectangle(new PDRectangle(rect.llx, rect.lly, w, h));
+
+        PDAppearanceStream apStream = new PDAppearanceStream(doc);
+        apStream.setResources(new org.apache.pdfbox.pdmodel.PDResources());
+        apStream.setBBox(new PDRectangle(w, h));
+
+        try (PDPageContentStream cs = new PDPageContentStream(doc, apStream)) {
+            cs.setNonStrokingColor(1f, 1f, 1f);
+            cs.addRect(0, 0, w, h);
+            cs.fill();
+            if (tpl != null) {
+                cs.drawImage(tpl, 0, 0, w, h);
+            }
+            drawBorder(cs, w, h, border);
+        }
+
+        PDAppearanceDictionary apDict = new PDAppearanceDictionary();
+        apDict.getCOSObject().setDirect(true);
+        apDict.setNormalAppearance(apStream);
+        widget.setAppearance(apDict);
+        widget.getCOSObject().setNeedToBeUpdated(true);
+    }
+
+    // -----------------------------------------------------------------------
     // StandardSignature: direct vector text appearance on the widget
     // -----------------------------------------------------------------------
 
@@ -405,93 +663,78 @@ public final class PdfEngine {
      *  2. Builds a PDAppearanceStream with real PDF text operators (no PNG/rasterization)
      *  3. Sets it as the widget's /AP /N stream
      */
-    private void buildStandardTextAppearance(PDDocument doc, PDSignature sig,
+    private void buildStandardTextAppearance(PDDocument doc, PDAnnotationWidget widget,
             AppearanceSpec ap, PdfRect desiredRect,
             com.emudhra.esign.pdf.model.BorderSpec border) throws IOException {
-        PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm(null);
-        if (acroForm == null) return;
+        float w = desiredRect.getWidth();
+        float h = desiredRect.getHeight();
 
-        for (PDField field : acroForm.getFields()) {
-            if (!(field instanceof PDSignatureField)) continue;
-            PDSignatureField sf = (PDSignatureField) field;
-            PDSignature sfSig = sf.getSignature();
-            if (sfSig == null || !sfSig.getCOSObject().equals(sig.getCOSObject())) continue;
+        // Restore the real rect (prepareNonVisibleSignature set it to [0 0 0 0])
+        widget.setRectangle(new PDRectangle(desiredRect.llx, desiredRect.lly, w, h));
 
-            List<PDAnnotationWidget> widgets = sf.getWidgets();
-            if (widgets == null || widgets.isEmpty()) break;
-            PDAnnotationWidget widget = widgets.get(0);
+        // --- Prepare text lines ---
+        String text = (ap != null && ap.layer2Text != null && !ap.layer2Text.trim().isEmpty())
+                ? ap.layer2Text : "Digitally Signed.";
+        String[] lines = text.split("\n");
 
-            float w = desiredRect.getWidth();
-            float h = desiredRect.getHeight();
+        // Count non-empty lines to drive font-size calculation
+        int lineCount = 0;
+        for (String l : lines) if (!l.trim().isEmpty()) lineCount++;
+        lineCount = Math.max(1, lineCount);
 
-            // Restore the real rect (prepareNonVisibleSignature set it to [0 0 0 0])
-            widget.setRectangle(new PDRectangle(desiredRect.llx, desiredRect.lly, w, h));
+        float margin  = 3f;
+        float availH  = h - 2 * margin;
 
-            // --- Prepare text lines ---
-            String text = (ap != null && ap.layer2Text != null && !ap.layer2Text.trim().isEmpty())
-                    ? ap.layer2Text : "Digitally Signed.";
-            String[] lines = text.split("\n");
-
-            // Count non-empty lines to drive font-size calculation
-            int lineCount = 0;
-            for (String l : lines) if (!l.trim().isEmpty()) lineCount++;
-            lineCount = Math.max(1, lineCount);
-
-            float margin  = 3f;
-            float availH  = h - 2 * margin;
-
-            // Start from the configured/default size and shrink until all lines fit
-            float fontSize = (ap != null && ap.fontSize > 0) ? (float) ap.fontSize : 9f;
-            float leading  = fontSize * 1.5f;
-            while (lineCount * leading > availH && fontSize > 4.5f) {
-                fontSize -= 0.5f;
-                leading   = fontSize * 1.5f;
-            }
-
-            // --- Build the /AP /N appearance stream ---
-            PDAppearanceStream apStream = new PDAppearanceStream(doc);
-            apStream.setResources(new org.apache.pdfbox.pdmodel.PDResources());
-            apStream.setBBox(new PDRectangle(w, h));
-
-            PDType1Font font = new PDType1Font(Standard14Fonts.FontName.TIMES_ITALIC);
-
-            try (PDPageContentStream cs = new PDPageContentStream(doc, apStream)) {
-                // White background
-                cs.setNonStrokingColor(1f, 1f, 1f);
-                cs.addRect(0, 0, w, h);
-                cs.fill();
-
-                // Text colour
-                if (ap != null && ap.fontColor != null) {
-                    cs.setNonStrokingColor(
-                        ap.fontColor.r / 255f,
-                        ap.fontColor.g / 255f,
-                        ap.fontColor.b / 255f);
-                } else {
-                    cs.setNonStrokingColor(0f, 0f, 0f);
-                }
-
-                cs.beginText();
-                cs.setFont(font, fontSize);
-                cs.setLeading(leading);
-                // First baseline just below the top edge
-                cs.newLineAtOffset(margin, h - margin - fontSize);
-                for (String line : lines) {
-                    String l = line.trim();
-                    cs.showText(l.isEmpty() ? " " : l);
-                    cs.newLine();
-                }
-                cs.endText();
-                drawBorder(cs, w, h, border);
-            }
-
-            PDAppearanceDictionary apDict = new PDAppearanceDictionary();
-            apDict.getCOSObject().setDirect(true);
-            apDict.setNormalAppearance(apStream);
-            widget.setAppearance(apDict);
-            widget.getCOSObject().setNeedToBeUpdated(true);
-            break;
+        // Start from the configured/default size and shrink until all lines fit
+        float fontSize = (ap != null && ap.fontSize > 0) ? (float) ap.fontSize : 9f;
+        float leading  = fontSize * 1.5f;
+        while (lineCount * leading > availH && fontSize > 4.5f) {
+            fontSize -= 0.5f;
+            leading   = fontSize * 1.5f;
         }
+
+        // --- Build the /AP /N appearance stream ---
+        PDAppearanceStream apStream = new PDAppearanceStream(doc);
+        apStream.setResources(new org.apache.pdfbox.pdmodel.PDResources());
+        apStream.setBBox(new PDRectangle(w, h));
+
+        PDType1Font font = new PDType1Font(Standard14Fonts.FontName.TIMES_ITALIC);
+
+        try (PDPageContentStream cs = new PDPageContentStream(doc, apStream)) {
+            // White background
+            cs.setNonStrokingColor(1f, 1f, 1f);
+            cs.addRect(0, 0, w, h);
+            cs.fill();
+
+            // Text colour
+            if (ap != null && ap.fontColor != null) {
+                cs.setNonStrokingColor(
+                    ap.fontColor.r / 255f,
+                    ap.fontColor.g / 255f,
+                    ap.fontColor.b / 255f);
+            } else {
+                cs.setNonStrokingColor(0f, 0f, 0f);
+            }
+
+            cs.beginText();
+            cs.setFont(font, fontSize);
+            cs.setLeading(leading);
+            // First baseline just below the top edge
+            cs.newLineAtOffset(margin, h - margin - fontSize);
+            for (String line : lines) {
+                String l = line.trim();
+                cs.showText(l.isEmpty() ? " " : l);
+                cs.newLine();
+            }
+            cs.endText();
+            drawBorder(cs, w, h, border);
+        }
+
+        PDAppearanceDictionary apDict = new PDAppearanceDictionary();
+        apDict.getCOSObject().setDirect(true);
+        apDict.setNormalAppearance(apStream);
+        widget.setAppearance(apDict);
+        widget.getCOSObject().setNeedToBeUpdated(true);
     }
 
     // -----------------------------------------------------------------------
@@ -503,131 +746,114 @@ public final class PdfEngine {
      * fullBackground=true  → image covers the full box width; text is overlaid on the right half.
      * fullBackground=false → image on the left 45%, text on the right 55% (split layout).
      */
-    private void buildNativeImageAppearance(PDDocument doc, PDSignature sig,
+    private void buildNativeImageAppearance(PDDocument doc, PDAnnotationWidget widget,
             AppearanceSpec ap, PdfRect desiredRect, boolean fullBackground,
-            com.emudhra.esign.pdf.model.BorderSpec border) throws IOException {
-        PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm(null);
-        if (acroForm == null) return;
+            com.emudhra.esign.pdf.model.BorderSpec border, PDImageXObject sharedImg) throws IOException {
+        float w = desiredRect.getWidth();
+        float h = desiredRect.getHeight();
+        widget.setRectangle(new PDRectangle(desiredRect.llx, desiredRect.lly, w, h));
 
-        for (PDField field : acroForm.getFields()) {
-            if (!(field instanceof PDSignatureField)) continue;
-            PDSignatureField sf = (PDSignatureField) field;
-            PDSignature sfSig = sf.getSignature();
-            if (sfSig == null || !sfSig.getCOSObject().equals(sig.getCOSObject())) continue;
+        boolean hasImage = sharedImg != null;
+        boolean hasText  = ap != null && ap.layer2Text != null && !ap.layer2Text.trim().isEmpty();
 
-            List<PDAnnotationWidget> widgets = sf.getWidgets();
-            if (widgets == null || widgets.isEmpty()) break;
-            PDAnnotationWidget widget = widgets.get(0);
+        // Image draw width and text start X depend on layout mode
+        float imgDrawW  = fullBackground ? w : (hasImage && hasText ? w * 0.45f : (hasImage ? w : 0f));
+        float textX     = fullBackground ? 3f : (hasImage ? imgDrawW + 4f : 3f);
+        float textAreaW = fullBackground ? (w - 6f) : (w - textX - 3f);
 
-            float w = desiredRect.getWidth();
-            float h = desiredRect.getHeight();
-            widget.setRectangle(new PDRectangle(desiredRect.llx, desiredRect.lly, w, h));
+        String[] lines = hasText ? ap.layer2Text.split("\n") : new String[0];
+        int lineCount = 0;
+        for (String l : lines) if (!l.trim().isEmpty()) lineCount++;
+        lineCount = Math.max(1, lineCount);
 
-            boolean hasImage = ap != null && ap.imageBytes != null && ap.imageBytes.length > 0;
-            boolean hasText  = ap != null && ap.layer2Text != null && !ap.layer2Text.trim().isEmpty();
+        float margin   = 3f;
+        float availH   = h - 2 * margin;
+        float fontSize = (ap != null && ap.fontSize > 0) ? (float) ap.fontSize : 8f;
+        float leading  = fontSize * 1.5f;
 
-            // Image draw width and text start X depend on layout mode
-            float imgDrawW  = fullBackground ? w : (hasImage && hasText ? w * 0.45f : (hasImage ? w : 0f));
-            float textX     = fullBackground ? 3f : (hasImage ? imgDrawW + 4f : 3f);
-            float textAreaW = fullBackground ? (w - 6f) : (w - textX - 3f);
+        PDType1Font font = new PDType1Font(Standard14Fonts.FontName.TIMES_ITALIC);
 
-            String[] lines = hasText ? ap.layer2Text.split("\n") : new String[0];
-            int lineCount = 0;
-            for (String l : lines) if (!l.trim().isEmpty()) lineCount++;
-            lineCount = Math.max(1, lineCount);
+        // Shrink until all lines fit vertically
+        while (lineCount * leading > availH && fontSize > 4f) {
+            fontSize -= 0.5f;
+            leading   = fontSize * 1.5f;
+        }
 
-            float margin   = 3f;
-            float availH   = h - 2 * margin;
-            float fontSize = (ap != null && ap.fontSize > 0) ? (float) ap.fontSize : 8f;
-            float leading  = fontSize * 1.5f;
-
-            PDType1Font font = new PDType1Font(Standard14Fonts.FontName.TIMES_ITALIC);
-
-            // Shrink until all lines fit vertically
+        // Shrink until the widest line fits horizontally in the text area
+        if (hasText && textAreaW > 10) {
+            for (String line : lines) {
+                if (line.trim().isEmpty()) continue;
+                try {
+                    float lineW = font.getStringWidth(line.trim()) / 1000f * fontSize;
+                    while (lineW > textAreaW && fontSize > 4f) {
+                        fontSize -= 0.5f;
+                        leading   = fontSize * 1.5f;
+                        lineW     = font.getStringWidth(line.trim()) / 1000f * fontSize;
+                    }
+                } catch (IOException ignored) {}
+            }
+            // Re-check height after width-driven shrink
             while (lineCount * leading > availH && fontSize > 4f) {
                 fontSize -= 0.5f;
                 leading   = fontSize * 1.5f;
             }
-
-            // Shrink until the widest line fits horizontally in the text area
-            if (hasText && textAreaW > 10) {
-                for (String line : lines) {
-                    if (line.trim().isEmpty()) continue;
-                    try {
-                        float lineW = font.getStringWidth(line.trim()) / 1000f * fontSize;
-                        while (lineW > textAreaW && fontSize > 4f) {
-                            fontSize -= 0.5f;
-                            leading   = fontSize * 1.5f;
-                            lineW     = font.getStringWidth(line.trim()) / 1000f * fontSize;
-                        }
-                    } catch (IOException ignored) {}
-                }
-                // Re-check height after width-driven shrink
-                while (lineCount * leading > availH && fontSize > 4f) {
-                    fontSize -= 0.5f;
-                    leading   = fontSize * 1.5f;
-                }
-            }
-
-            PDAppearanceStream apStream = new PDAppearanceStream(doc);
-            apStream.setResources(new org.apache.pdfbox.pdmodel.PDResources());
-            apStream.setBBox(new PDRectangle(w, h));
-
-            final float fs = fontSize;
-            final float ld = leading;
-
-            try (PDPageContentStream cs = new PDPageContentStream(doc, apStream)) {
-                // White base
-                cs.setNonStrokingColor(1f, 1f, 1f);
-                cs.addRect(0, 0, w, h);
-                cs.fill();
-
-                // Embed image directly — no Java2D re-encoding, original quality preserved
-                if (hasImage) {
-                    try {
-                        PDImageXObject imgXObj = PDImageXObject.createFromByteArray(
-                                doc, ap.imageBytes, "sig");
-                        cs.drawImage(imgXObj, 0, 0, imgDrawW, h);
-                    } catch (Exception ignored) {}
-                }
-
-                // Thin separator line for split layout
-                if (!fullBackground && hasImage && hasText) {
-                    cs.setStrokingColor(0.75f, 0.75f, 0.75f);
-                    cs.moveTo(imgDrawW + 2, margin);
-                    cs.lineTo(imgDrawW + 2, h - margin);
-                    cs.stroke();
-                }
-
-                // Vector text
-                if (hasText) {
-                    if (ap.fontColor != null) {
-                        cs.setNonStrokingColor(
-                            ap.fontColor.r / 255f, ap.fontColor.g / 255f, ap.fontColor.b / 255f);
-                    } else {
-                        cs.setNonStrokingColor(0f, 0f, 0f);
-                    }
-                    cs.beginText();
-                    cs.setFont(font, fs);
-                    cs.setLeading(ld);
-                    cs.newLineAtOffset(textX, h - margin - fs);
-                    for (String line : lines) {
-                        String l = line.trim();
-                        cs.showText(l.isEmpty() ? " " : l);
-                        cs.newLine();
-                    }
-                    cs.endText();
-                }
-                drawBorder(cs, w, h, border);
-            }
-
-            PDAppearanceDictionary apDict = new PDAppearanceDictionary();
-            apDict.getCOSObject().setDirect(true);
-            apDict.setNormalAppearance(apStream);
-            widget.setAppearance(apDict);
-            widget.getCOSObject().setNeedToBeUpdated(true);
-            break;
         }
+
+        PDAppearanceStream apStream = new PDAppearanceStream(doc);
+        apStream.setResources(new org.apache.pdfbox.pdmodel.PDResources());
+        apStream.setBBox(new PDRectangle(w, h));
+
+        final float fs = fontSize;
+        final float ld = leading;
+
+        try (PDPageContentStream cs = new PDPageContentStream(doc, apStream)) {
+            // White base
+            cs.setNonStrokingColor(1f, 1f, 1f);
+            cs.addRect(0, 0, w, h);
+            cs.fill();
+
+            // Embed the shared image XObject (decoded once for all widgets)
+            if (hasImage) {
+                try {
+                    cs.drawImage(sharedImg, 0, 0, imgDrawW, h);
+                } catch (Exception ignored) {}
+            }
+
+            // Thin separator line for split layout
+            if (!fullBackground && hasImage && hasText) {
+                cs.setStrokingColor(0.75f, 0.75f, 0.75f);
+                cs.moveTo(imgDrawW + 2, margin);
+                cs.lineTo(imgDrawW + 2, h - margin);
+                cs.stroke();
+            }
+
+            // Vector text
+            if (hasText) {
+                if (ap.fontColor != null) {
+                    cs.setNonStrokingColor(
+                        ap.fontColor.r / 255f, ap.fontColor.g / 255f, ap.fontColor.b / 255f);
+                } else {
+                    cs.setNonStrokingColor(0f, 0f, 0f);
+                }
+                cs.beginText();
+                cs.setFont(font, fs);
+                cs.setLeading(ld);
+                cs.newLineAtOffset(textX, h - margin - fs);
+                for (String line : lines) {
+                    String l = line.trim();
+                    cs.showText(l.isEmpty() ? " " : l);
+                    cs.newLine();
+                }
+                cs.endText();
+            }
+            drawBorder(cs, w, h, border);
+        }
+
+        PDAppearanceDictionary apDict = new PDAppearanceDictionary();
+        apDict.getCOSObject().setDirect(true);
+        apDict.setNormalAppearance(apStream);
+        widget.setAppearance(apDict);
+        widget.getCOSObject().setNeedToBeUpdated(true);
     }
 
     // -----------------------------------------------------------------------
@@ -638,143 +864,116 @@ public final class PdfEngine {
      * Image (SVG or raster) fills the entire box; leftSideText on the left half,
      * rightSideText on the right half — all drawn as native PDF operators on top.
      */
-    private void buildNativeAdvanceAppearance(PDDocument doc, PDSignature sig,
+    private void buildNativeAdvanceAppearance(PDDocument doc, PDAnnotationWidget widget,
             AppearanceSpec ap, PdfRect desiredRect,
-            com.emudhra.esign.pdf.model.BorderSpec border) throws IOException {
-        PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm(null);
-        if (acroForm == null) return;
+            com.emudhra.esign.pdf.model.BorderSpec border, PDImageXObject sharedAdv) throws IOException {
+        float w = desiredRect.getWidth();
+        float h = desiredRect.getHeight();
+        widget.setRectangle(new PDRectangle(desiredRect.llx, desiredRect.lly, w, h));
 
-        for (PDField field : acroForm.getFields()) {
-            if (!(field instanceof PDSignatureField)) continue;
-            PDSignatureField sf = (PDSignatureField) field;
-            PDSignature sfSig = sf.getSignature();
-            if (sfSig == null || !sfSig.getCOSObject().equals(sig.getCOSObject())) continue;
+        boolean hasLeft  = ap != null && ap.leftSideText  != null && !ap.leftSideText.trim().isEmpty();
+        boolean hasRight = ap != null && ap.rightSideText != null && !ap.rightSideText.trim().isEmpty();
 
-            List<PDAnnotationWidget> widgets = sf.getWidgets();
-            if (widgets == null || widgets.isEmpty()) break;
-            PDAnnotationWidget widget = widgets.get(0);
+        String[] leftLines  = hasLeft  ? ap.leftSideText.split("\n")  : new String[0];
+        String[] rightLines = hasRight ? ap.rightSideText.split("\n") : new String[0];
 
-            float w = desiredRect.getWidth();
-            float h = desiredRect.getHeight();
-            widget.setRectangle(new PDRectangle(desiredRect.llx, desiredRect.lly, w, h));
+        int leftCount  = 0; for (String l : leftLines)  if (!l.trim().isEmpty()) leftCount++;
+        int rightCount = 0; for (String l : rightLines) if (!l.trim().isEmpty()) rightCount++;
+        int lineCount  = Math.max(Math.max(leftCount, rightCount), 1);
 
-            boolean hasLeft  = ap != null && ap.leftSideText  != null && !ap.leftSideText.trim().isEmpty();
-            boolean hasRight = ap != null && ap.rightSideText != null && !ap.rightSideText.trim().isEmpty();
+        float margin    = 3f;
+        float halfW     = w / 2f;
+        float availH    = h - 2 * margin;
+        float colW      = halfW - 2 * margin;   // max width per text column
 
-            String[] leftLines  = hasLeft  ? ap.leftSideText.split("\n")  : new String[0];
-            String[] rightLines = hasRight ? ap.rightSideText.split("\n") : new String[0];
+        float fontSize = (ap != null && ap.fontSize > 0) ? (float) ap.fontSize : 8f;
+        float leading  = fontSize * 1.5f;
 
-            int leftCount  = 0; for (String l : leftLines)  if (!l.trim().isEmpty()) leftCount++;
-            int rightCount = 0; for (String l : rightLines) if (!l.trim().isEmpty()) rightCount++;
-            int lineCount  = Math.max(Math.max(leftCount, rightCount), 1);
+        PDType1Font font = new PDType1Font(Standard14Fonts.FontName.TIMES_ITALIC);
 
-            float margin    = 3f;
-            float halfW     = w / 2f;
-            float availH    = h - 2 * margin;
-            float colW      = halfW - 2 * margin;   // max width per text column
-
-            float fontSize = (ap != null && ap.fontSize > 0) ? (float) ap.fontSize : 8f;
-            float leading  = fontSize * 1.5f;
-
-            PDType1Font font = new PDType1Font(Standard14Fonts.FontName.TIMES_ITALIC);
-
-            // Shrink for height
-            while (lineCount * leading > availH && fontSize > 4f) {
-                fontSize -= 0.5f;
-                leading   = fontSize * 1.5f;
-            }
-
-            // Shrink for width — check every line in both columns
-            List<String> allLines = new ArrayList<>();
-            for (String l : leftLines)  if (!l.trim().isEmpty()) allLines.add(l.trim());
-            for (String l : rightLines) if (!l.trim().isEmpty()) allLines.add(l.trim());
-            for (String line : allLines) {
-                try {
-                    float lw = font.getStringWidth(line) / 1000f * fontSize;
-                    while (lw > colW && fontSize > 4f) {
-                        fontSize -= 0.5f;
-                        leading   = fontSize * 1.5f;
-                        lw        = font.getStringWidth(line) / 1000f * fontSize;
-                    }
-                } catch (IOException ignored) {}
-            }
-            // Re-check height after width-driven shrink
-            while (lineCount * leading > availH && fontSize > 4f) {
-                fontSize -= 0.5f;
-                leading   = fontSize * 1.5f;
-            }
-
-            final float fs = fontSize;
-            final float ld = leading;
-
-            PDAppearanceStream apStream = new PDAppearanceStream(doc);
-            apStream.setResources(new org.apache.pdfbox.pdmodel.PDResources());
-            apStream.setBBox(new PDRectangle(w, h));
-
-            try (PDPageContentStream cs = new PDPageContentStream(doc, apStream)) {
-                // White base
-                cs.setNonStrokingColor(1f, 1f, 1f);
-                cs.addRect(0, 0, w, h);
-                cs.fill();
-
-                // Draw background image (SVG rasterised at 2× or raster direct)
-                boolean hasSvg   = ap != null && ap.advanceImageType == ImageType.SVG
-                                   && ap.advanceSvgBytes != null && ap.advanceSvgBytes.length > 0;
-                boolean hasImage = ap != null && ap.imageBytes != null && ap.imageBytes.length > 0;
-
-                if (hasSvg) {
-                    byte[] png = rasterizeSvgToPng(ap.advanceSvgBytes, (int)(w * 2), (int)(h * 2));
-                    if (png != null) {
-                        PDImageXObject imgXObj = PDImageXObject.createFromByteArray(doc, png, "svg");
-                        cs.drawImage(imgXObj, 0, 0, w, h);
-                    }
-                } else if (hasImage) {
-                    try {
-                        PDImageXObject imgXObj = PDImageXObject.createFromByteArray(
-                                doc, ap.imageBytes, "adv");
-                        cs.drawImage(imgXObj, 0, 0, w, h);
-                    } catch (Exception ignored) {}
-                }
-
-                // Left-side text (left half, left-aligned)
-                if (hasLeft) {
-                    cs.setNonStrokingColor(0f, 0f, 0f);
-                    cs.beginText();
-                    cs.setFont(font, fs);
-                    cs.setLeading(ld);
-                    cs.newLineAtOffset(margin, h - margin - fs);
-                    for (String line : leftLines) {
-                        String l = line.trim();
-                        cs.showText(l.isEmpty() ? " " : l);
-                        cs.newLine();
-                    }
-                    cs.endText();
-                }
-
-                // Right-side text (right half, left-aligned within that half)
-                if (hasRight) {
-                    cs.setNonStrokingColor(0f, 0f, 0f);
-                    cs.beginText();
-                    cs.setFont(font, fs);
-                    cs.setLeading(ld);
-                    cs.newLineAtOffset(halfW + margin, h - margin - fs);
-                    for (String line : rightLines) {
-                        String l = line.trim();
-                        cs.showText(l.isEmpty() ? " " : l);
-                        cs.newLine();
-                    }
-                    cs.endText();
-                }
-                drawBorder(cs, w, h, border);
-            }
-
-            PDAppearanceDictionary apDict = new PDAppearanceDictionary();
-            apDict.getCOSObject().setDirect(true);
-            apDict.setNormalAppearance(apStream);
-            widget.setAppearance(apDict);
-            widget.getCOSObject().setNeedToBeUpdated(true);
-            break;
+        // Shrink for height
+        while (lineCount * leading > availH && fontSize > 4f) {
+            fontSize -= 0.5f;
+            leading   = fontSize * 1.5f;
         }
+
+        // Shrink for width — check every line in both columns
+        List<String> allLines = new ArrayList<>();
+        for (String l : leftLines)  if (!l.trim().isEmpty()) allLines.add(l.trim());
+        for (String l : rightLines) if (!l.trim().isEmpty()) allLines.add(l.trim());
+        for (String line : allLines) {
+            try {
+                float lw = font.getStringWidth(line) / 1000f * fontSize;
+                while (lw > colW && fontSize > 4f) {
+                    fontSize -= 0.5f;
+                    leading   = fontSize * 1.5f;
+                    lw        = font.getStringWidth(line) / 1000f * fontSize;
+                }
+            } catch (IOException ignored) {}
+        }
+        // Re-check height after width-driven shrink
+        while (lineCount * leading > availH && fontSize > 4f) {
+            fontSize -= 0.5f;
+            leading   = fontSize * 1.5f;
+        }
+
+        final float fs = fontSize;
+        final float ld = leading;
+
+        PDAppearanceStream apStream = new PDAppearanceStream(doc);
+        apStream.setResources(new org.apache.pdfbox.pdmodel.PDResources());
+        apStream.setBBox(new PDRectangle(w, h));
+
+        try (PDPageContentStream cs = new PDPageContentStream(doc, apStream)) {
+            // White base
+            cs.setNonStrokingColor(1f, 1f, 1f);
+            cs.addRect(0, 0, w, h);
+            cs.fill();
+
+            // Draw the shared background image XObject (SVG rasterised / raster decoded once)
+            if (sharedAdv != null) {
+                try {
+                    cs.drawImage(sharedAdv, 0, 0, w, h);
+                } catch (Exception ignored) {}
+            }
+
+            // Left-side text (left half, left-aligned)
+            if (hasLeft) {
+                cs.setNonStrokingColor(0f, 0f, 0f);
+                cs.beginText();
+                cs.setFont(font, fs);
+                cs.setLeading(ld);
+                cs.newLineAtOffset(margin, h - margin - fs);
+                for (String line : leftLines) {
+                    String l = line.trim();
+                    cs.showText(l.isEmpty() ? " " : l);
+                    cs.newLine();
+                }
+                cs.endText();
+            }
+
+            // Right-side text (right half, left-aligned within that half)
+            if (hasRight) {
+                cs.setNonStrokingColor(0f, 0f, 0f);
+                cs.beginText();
+                cs.setFont(font, fs);
+                cs.setLeading(ld);
+                cs.newLineAtOffset(halfW + margin, h - margin - fs);
+                for (String line : rightLines) {
+                    String l = line.trim();
+                    cs.showText(l.isEmpty() ? " " : l);
+                    cs.newLine();
+                }
+                cs.endText();
+            }
+            drawBorder(cs, w, h, border);
+        }
+
+        PDAppearanceDictionary apDict = new PDAppearanceDictionary();
+        apDict.getCOSObject().setDirect(true);
+        apDict.setNormalAppearance(apStream);
+        widget.setAppearance(apDict);
+        widget.getCOSObject().setNeedToBeUpdated(true);
     }
 
     /**
