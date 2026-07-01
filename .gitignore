@@ -5,6 +5,9 @@ dist/
 # Temp signing files
 *.sig
 
+# Local-only test drivers (excluded from JAR, not part of the SDK)
+src/TestHarness.java
+
 # Claude Code
 CLAUDE.md
 .claude/
