@@ -1,7 +1,9 @@
 package com.emudhra.esign.pdf.model;
 
 public final class PdfColor {
-    public final int r, g, b;
+    public final int r;
+    public final int g;
+    public final int b;
 
     public static final PdfColor BLACK = new PdfColor(0, 0, 0);
     public static final PdfColor WHITE = new PdfColor(255, 255, 255);

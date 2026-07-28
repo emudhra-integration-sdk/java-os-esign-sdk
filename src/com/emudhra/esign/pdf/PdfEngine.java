@@ -70,8 +70,6 @@ import java.util.List;
  */
 public final class PdfEngine {
 
-    private static final int DPI = 72;
-
     // -----------------------------------------------------------------------
     // Document utilities
     // -----------------------------------------------------------------------

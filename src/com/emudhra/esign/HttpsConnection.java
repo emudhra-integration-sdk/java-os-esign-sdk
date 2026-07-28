@@ -23,7 +23,6 @@ import javax.net.ssl.KeyManager;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
-//import org.apache.logging.log4j.core.Logger;
 
 /**
  * @author 20323
@@ -61,7 +60,7 @@ public final class HttpsConnection {
             url = new URL(targetURL);
             try {
                 logger.info("HttpsConnection.excutePostHttpsXml Start ");
-                if (proxyreq == true) // Updated by Munish @ 20323
+                if (proxyreq) // Updated by Munish @ 20323
                 {
                     logger.info("Proxy Added for IP address :" + proxyIp + " and port number :" + proxyPort + " TxnID: " + txn);
                     Proxy proxy = new Proxy(Proxy.Type.HTTP, new InetSocketAddress(proxyIp, proxyPort));
@@ -79,9 +78,7 @@ public final class HttpsConnection {
                     connection = (HttpsURLConnection) url.openConnection();
                 }
             } catch (IOException ee) {
-                //logger.error("Exception in HttpsConnection.excutePostHttpsXml while openning connection " + Arrays.toString(ee.getStackTrace()));
                 logger.warning("Exception in HttpsConnection.excutePostHttpsXml for session/read timeout :" + sessionTimeout + " mili second");
-                //logger.info("Exception in HttpsConnection.excutePostHttpsXml while openning connection " + ee);
                 throw ee;
             }
             if (sessionTimeout > 0) {
@@ -101,7 +98,6 @@ public final class HttpsConnection {
             wr.writeBytes(urlParameters);
             wr.flush();
             wr.close();
-            //logger.debug("responseCode ---------->" + responseCode);
             InputStream is = connection.getInputStream();
             BufferedReader rd = new BufferedReader(new InputStreamReader(is));
             String line;
@@ -115,9 +111,7 @@ public final class HttpsConnection {
             return response.toString();
         } catch (Exception e) {
             logger.warning("Exception in HttpsConnection.excutePostHttpsXml for session/read timeout :" + sessionTimeout + " mili second.");
-            //logger.info("Exception in HttpsConnection.excutePostHttpsXml " + e);
             throw e;
-            //return e.toString();
         } finally {
             if (connection != null) {
                 connection.disconnect();
