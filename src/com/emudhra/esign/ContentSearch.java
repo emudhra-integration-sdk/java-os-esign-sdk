@@ -17,7 +17,7 @@ public class ContentSearch {
     private String offset;
     private Position position;
 
-    public static enum Position {
+    public enum Position {
         /// <summary>
         /// Makes signature appearance to be on Outer Top Left.
         /// </summary>

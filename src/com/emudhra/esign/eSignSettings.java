@@ -5,8 +5,6 @@
  */
 package com.emudhra.esign;
 
-import java.util.logging.Logger;
-
 /**
  *
  * @author 20476
@@ -19,7 +17,6 @@ public final class eSignSettings {
         AllLog
     }
 
-    private static final Logger LOGGER = EsignLoggerFactory.getLogger(eSignSettings.class);
     private static String ASPID;
     private static String ESIGNURL;
     private static String ESIGNURLV2;

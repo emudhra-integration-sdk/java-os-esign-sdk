@@ -74,12 +74,11 @@ public class EsignLoggerFactory {
                 @Override
                 public String format(LogRecord record) {
                     String time = dateFormat.format(new Date(record.getMillis()));
-                    String log = "" + time + "" + "\t"
+                    return "" + time + "" + "\t"
                             + "[" + record.getLevel() + "]" + "\t"
                             + "[" + record.getSourceClassName() + "]" + "\t"
                             //                            + "[" + record.getSourceMethodName() + "]" + "  "
                             + "\t" + record.getMessage() + "\n";
-                    return log;
                 }
             });
 

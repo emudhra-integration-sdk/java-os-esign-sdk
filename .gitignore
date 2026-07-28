@@ -7,6 +7,14 @@ dist/
 
 # Local-only test drivers (excluded from JAR, not part of the SDK)
 src/TestHarness.java
+src/Test1.java
+
+# Internal security/VAPT documents and scan configuration - shared with the
+# auditor, not published to the open-source repo
+VAPT-SCAN-INSTRUCTIONS.md
+SECURITY-SUPPRESSIONS.md
+sonar-project.properties
+dependency-check-suppression.xml
 
 # Claude Code
 CLAUDE.md
@@ -23,3 +31,5 @@ nbproject/private/
 # OS files
 .DS_Store
 Thumbs.db
+AGENTS.md
+.vscode/settings.json

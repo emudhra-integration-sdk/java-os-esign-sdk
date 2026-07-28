@@ -25,6 +25,7 @@ import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 
+import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.transform.Transformer;
@@ -81,6 +82,12 @@ public class DigitalSignerNew {
             // Parse the input XML
             DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
             dbf.setNamespaceAware(true);
+            dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            dbf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            dbf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            dbf.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            dbf.setXIncludeAware(false);
+            dbf.setExpandEntityReferences(false);
             Document inputDocument = dbf.newDocumentBuilder().parse(new InputSource(new StringReader(xmlDocument)));
 
             // Create a new XMLSignature
@@ -108,6 +115,9 @@ public class DigitalSignerNew {
             // Convert the signedDocument to XML String
             StringWriter stringWriter = new StringWriter();
             TransformerFactory tf = TransformerFactory.newInstance();
+            tf.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+            tf.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
+            tf.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
             Transformer trans = tf.newTransformer();
 
             trans.setOutputProperty(javax.xml.transform.OutputKeys.INDENT, "no");
@@ -117,10 +127,7 @@ public class DigitalSignerNew {
             trans.transform(new DOMSource(inputDocument), new StreamResult(stringWriter));
 
             // Explicitly replace newlines to ensure Windows-style line endings
-//            String signedXml = stringWriter.getBuffer().toString().replace("\n", "\r");
-            String signedXml = stringWriter.getBuffer().toString();
-
-            return signedXml;
+            return stringWriter.getBuffer().toString();
         } catch (IOException | ParserConfigurationException | TransformerException | SAXException e) {
             throw new RuntimeException("Error while digitally signing the XML document", e);
         }
