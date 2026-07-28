@@ -162,15 +162,13 @@ The SDK requires the following libraries (included in `lib/`):
 
 | Library | Version | License |
 |---------|---------|---------|
-| [Apache Batik](https://xmlgraphics.apache.org/batik/) | 1.13 | [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) |
-| [Apache Commons IO](https://commons.apache.org/proper/commons-io/) | 2.4 | [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) |
-| [Apache Log4j API](https://logging.apache.org/log4j/2.x/) | 2.20.0 | [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) |
-| [Apache XML Security](https://santuario.apache.org/) | 2.3.0 | [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) |
-| [Apache XMLGraphics Commons](https://xmlgraphics.apache.org/commons/) | 2.4 | [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) |
-| [Bouncy Castle Provider](https://www.bouncycastle.org/) | 1.70 | [MIT](https://opensource.org/licenses/MIT) |
-| [Bouncy Castle PKIX](https://www.bouncycastle.org/) | 1.70 | [MIT](https://opensource.org/licenses/MIT) |
-| [Woodstox](https://github.com/FasterXML/woodstox) | 5.2.1 | [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) |
-| [Stax2 API](https://github.com/FasterXML/stax2-api) | 4.2 | [BSD 2-Clause](https://opensource.org/licenses/BSD-2-Clause) |
+| [Apache Batik](https://xmlgraphics.apache.org/batik/) | 1.17 | [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| [Apache Commons IO](https://commons.apache.org/proper/commons-io/) | 2.14.0 | [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| [Apache Log4j API](https://logging.apache.org/log4j/2.x/) | 2.25.3 | [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| [Apache XML Security](https://santuario.apache.org/) | 2.3.4 | [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| [Apache XMLGraphics Commons](https://xmlgraphics.apache.org/commons/) | 2.9 | [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| [Woodstox](https://github.com/FasterXML/woodstox) | 6.4.0 | [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| [Stax2 API](https://github.com/FasterXML/stax2-api) | 4.2.1 | [BSD 2-Clause](https://opensource.org/licenses/BSD-2-Clause) |
 | [SLF4J](https://www.slf4j.org/) | 1.7.32 | [MIT](https://opensource.org/licenses/MIT) |
 | [W3C SVG DOM](https://www.w3.org/Graphics/SVG/) | 1.1.0 | [W3C License](https://www.w3.org/Consortium/Legal/2015/copyright-software-and-document) |
 
