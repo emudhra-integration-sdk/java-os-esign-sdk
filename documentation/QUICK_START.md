@@ -63,18 +63,16 @@ Use `prepareDocuments()` and `appendSignatures()` to decouple PDF processing fro
 - **Java 11** or higher
 - **eSignASPLibrary5_11.jar** (the SDK JAR from `dist/`)
 - **All dependency JARs** from the `lib/` folder:
-  - batik-all-1.13.jar
-  - bcpkix-jdk15on-1.70.jar
-  - bcprov-jdk15on-1.70.jar
-  - commons-io-2.4.jar
-  - log4j-api-2.20.0.jar
-  - xmlsec-2.3.0.jar
-  - woodstox-core-5.2.1.jar
-  - stax2-api-4.2.jar
+  - batik-all-1.17.jar
+  - commons-io-2.14.0.jar
+  - log4j-api-2.25.3.jar
+  - xmlsec-2.3.4.jar
+  - woodstox-core-6.4.0.jar
+  - stax2-api-4.2.1.jar
   - slf4j-api-1.7.32.jar
   - slf4j-simple-1.7.32.jar
   - org.w3c.dom.svg-1.1.0.jar
-  - xmlgraphics-commons-2.4.jar
+  - xmlgraphics-commons-2.9.jar
 - **PFX certificate file** (.pfx) provided by eMudhra for XML signing
 - **ASP ID** (Application Service Provider ID) from eMudhra
 - **eSign URLs** (v1 and v2 gateway endpoints) from eMudhra
