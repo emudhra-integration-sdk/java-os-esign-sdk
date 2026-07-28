@@ -61,7 +61,7 @@ Use `prepareDocuments()` and `appendSignatures()` to decouple PDF processing fro
 ## Prerequisites
 
 - **Java 11** or higher
-- **eSignASPLibrary5_10.jar** (the SDK JAR from `dist/`)
+- **eSignASPLibrary5_11.jar** (the SDK JAR from `dist/`)
 - **All dependency JARs** from the `lib/` folder:
   - batik-all-1.13.jar
   - bcpkix-jdk15on-1.70.jar
@@ -1258,6 +1258,6 @@ ant compile
 ant clean
 ```
 
-Output JAR: `dist/eSignASPLibrary5_10.jar`
+Output JAR: `dist/eSignASPLibrary5_11.jar`
 
 The compiled JAR and all dependency JARs in `lib/` must be on your classpath.

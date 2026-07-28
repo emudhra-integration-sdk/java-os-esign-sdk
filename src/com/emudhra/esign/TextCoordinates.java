@@ -51,7 +51,10 @@ public class TextCoordinates {
 }
 
 class Coord {
-    float X1, Y1, X2, Y2;
+    float X1;
+    float Y1;
+    float X2;
+    float Y2;
     public Coord(float X1, float Y1, float X2, float Y2) {
         this.X1 = X1; this.Y1 = Y1; this.X2 = X2; this.Y2 = Y2;
     }

@@ -17,7 +17,6 @@ import org.emcastle.asn1.x500.style.BCStyle;
 import org.emcastle.asn1.x500.style.IETFUtils;
 import org.emcastle.asn1.x509.X509CertificateStructure;
 import java.io.File;
-import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
@@ -55,7 +54,7 @@ public final class eSignImplimentation {
     private final int proxyPort;
     private final PdfEngine pdfEngine = new PdfEngine();
 
-    private final static Logger LOGGER = EsignLoggerFactory.getLogger(eSignImplimentation.class);
+    private static final Logger LOGGER = EsignLoggerFactory.getLogger(eSignImplimentation.class);
 
     protected eSignImplimentation(String pfxfile, String password, String pfxAlias, String proxyIp, int proxyPort, boolean proxyreq) {
         this.pfxpath = pfxfile;
@@ -187,7 +186,7 @@ public final class eSignImplimentation {
                                     serviceReturnObj.setErrorMessage("Invalid Width");
                                     return serviceReturnObj;
                                 }
-                                if (input.getContentSearch().getOffset() == "") {
+                                if ("".equals(input.getContentSearch().getOffset())) {
                                     serviceReturnObj.setErrorCode("ESS-121");
                                     serviceReturnObj.setErrorMessage("Offset cannot be empty");
                                     return serviceReturnObj;
@@ -340,7 +339,10 @@ public final class eSignImplimentation {
                                     if (!pl1.contains("-")) pl1 = y + "-" + pl1;
                                     String[] newpages = pl1.split("-");
                                     String[] numbers = newpages[1].split(",");
-                                    float x11, y1, x2, y2;
+                                    float x11;
+                                    float y1;
+                                    float x2;
+                                    float y2;
                                     try {
                                         x11 = Float.valueOf(numbers[0]);
                                         y1  = Float.valueOf(numbers[1]);
@@ -363,7 +365,10 @@ public final class eSignImplimentation {
                                 }
                             } else {
                                 String[] numbers1 = coord != null ? coord.split(",") : new String[]{"1"};
-                                float x11, y11, x21, y21;
+                                float x11;
+                                float y11;
+                                float x21;
+                                float y21;
                                 try {
                                     x11 = Float.valueOf(numbers1[0]);
                                     y11 = Float.valueOf(numbers1[1]);
@@ -402,9 +407,9 @@ public final class eSignImplimentation {
                             hexHashDocument = Hex.toHexString(hashdata);
 
                             // Serialize PreSignResult to the wire format: position|bufferSize|base64pdf
-                            String preSignedBytes = new String(Base64.encode(preSignResult.preSignedPdfBytes), "UTF-8");
+                            String preSignedBytes = new String(Base64.encode(preSignResult.preSignedPdfBytes), StandardCharsets.UTF_8);
                             preSignedPdf = preSignResult.placeholderPosition + "|" + preSignResult.outputBufferSize + "|" + preSignedBytes;
-                            preSignedPdf = org.emcastle.util.encoders.Base64.toBase64String(preSignedPdf.getBytes("utf-8"));
+                            preSignedPdf = org.emcastle.util.encoders.Base64.toBase64String(preSignedPdf.getBytes(StandardCharsets.UTF_8));
                         }
 
                         ReturnDocument returnDocument = new ReturnDocument("", count, input.getDocInfo(), input.getDocURL(), hexHashDocument, preSignedPdf, eSign.InputType.PDF, input.isPatchSignatureAppearance());
@@ -502,7 +507,7 @@ public final class eSignImplimentation {
             } else if (status.equals("2")) {
                 String responseCode = eSignUtility.GetXpathValue(xPath, "/EsignResp/@resCode", doc);
                 String gateWayParamter = transactionID + "|" + responseCode;
-                gateWayParamter = org.emcastle.util.encoders.Base64.toBase64String(gateWayParamter.getBytes("utf-8"));
+                gateWayParamter = org.emcastle.util.encoders.Base64.toBase64String(gateWayParamter.getBytes(StandardCharsets.UTF_8));
                 serviceReturnObj.setRequestXML(signedRequestXML);
                 serviceReturnObj.setPreSignedTempFile(tempFilePath);
                 serviceReturnObj.setResponseXML(responseXML);
@@ -655,7 +660,6 @@ public final class eSignImplimentation {
                             docsToReturn.add(returnDocument);
                         } catch (Exception e) {
                             docsToReturn.add(new ReturnDocument(0, "ESS-112", "Unable to get Append signature to document", docId));
-                            continue;
                         }
                     }
                 }
@@ -805,7 +809,7 @@ public final class eSignImplimentation {
                                     serviceReturnObj.setErrorMessage("Invalid Width");
                                     return serviceReturnObj;
                                 }
-                                if (input.getContentSearch().getOffset() == "") {
+                                if ("".equals(input.getContentSearch().getOffset())) {
                                     serviceReturnObj.setErrorCode("ESS-121");
                                     serviceReturnObj.setErrorMessage("Offset cannot be empty");
                                     return serviceReturnObj;
@@ -937,7 +941,10 @@ public final class eSignImplimentation {
                                     if (!pl1.contains("-")) pl1 = y + "-" + pl1;
                                     String[] newpages = pl1.split("-");
                                     String[] numbers = newpages[1].split(",");
-                                    float x11, y1, x2, y2;
+                                    float x11;
+                                    float y1;
+                                    float x2;
+                                    float y2;
                                     try {
                                         x11 = Float.valueOf(numbers[0]);
                                         y1  = Float.valueOf(numbers[1]);
@@ -958,7 +965,10 @@ public final class eSignImplimentation {
                                 }
                             } else {
                                 String[] numbers1 = coord != null ? coord.split(",") : new String[]{"1"};
-                                float x11, y11, x21, y21;
+                                float x11;
+                                float y11;
+                                float x21;
+                                float y21;
                                 try {
                                     x11 = Float.valueOf(numbers1[0]);
                                     y11 = Float.valueOf(numbers1[1]);
@@ -991,9 +1001,9 @@ public final class eSignImplimentation {
                             byte[] hashdata = Base64.decode(hashData);
                             hexHashDocument = Hex.toHexString(hashdata);
 
-                            String preSignedBytes = new String(Base64.encode(preSignResult.preSignedPdfBytes), "UTF-8");
+                            String preSignedBytes = new String(Base64.encode(preSignResult.preSignedPdfBytes), StandardCharsets.UTF_8);
                             preSignedPdf = preSignResult.placeholderPosition + "|" + preSignResult.outputBufferSize + "|" + preSignedBytes;
-                            preSignedPdf = org.emcastle.util.encoders.Base64.toBase64String(preSignedPdf.getBytes("utf-8"));
+                            preSignedPdf = org.emcastle.util.encoders.Base64.toBase64String(preSignedPdf.getBytes(StandardCharsets.UTF_8));
                         }
 
                         ReturnDocument returnDocument = new ReturnDocument("", count, input.getDocInfo(), input.getDocURL(),
@@ -1370,7 +1380,7 @@ public final class eSignImplimentation {
                 advanceImageType = input.getAdvanceSignature().getImageType();
                 if (advanceImageType == ImageType.SVG) {
                     String str = new String(Base64.decode(input.getAdvanceSignature().getImagebase64()));
-                    str = str.replaceAll("(\\s+)font=\"(.*?)\"", "");
+                    str = str.replaceAll("\\s+font=\"[^\"]*\"", "");
                     str = str.replaceAll("fill='transparent'", "fill='none'");
                     advanceSvgBytes = str.getBytes(StandardCharsets.UTF_8);
                 } else {

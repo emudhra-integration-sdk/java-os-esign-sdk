@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.logging.Logger;
+import javax.xml.XMLConstants;
 import javax.xml.crypto.dsig.CanonicalizationMethod;
 import javax.xml.crypto.dsig.DigestMethod;
 import javax.xml.crypto.dsig.Reference;
@@ -34,7 +35,6 @@ import javax.xml.transform.Transformer;
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
-//import org.apache.logging.log4j.core.Logger;
 import org.w3c.dom.Document;
 import org.w3c.dom.Node;
 import org.xml.sax.InputSource;
@@ -68,12 +68,21 @@ public final class DigitalSigner {
             // Parse the input XML
             DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
             dbf.setNamespaceAware(true);
+            dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            dbf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            dbf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            dbf.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            dbf.setXIncludeAware(false);
+            dbf.setExpandEntityReferences(false);
             Document inputDocument = dbf.newDocumentBuilder().parse(new InputSource(new StringReader(xmlDocument)));
             // Sign the input XML's DOM document
             Document signedDocument = sign(inputDocument, includeKeyInfo);
             // Convert the signedDocument to XML String
             StringWriter stringWriter = new StringWriter();
             TransformerFactory tf = TransformerFactory.newInstance();
+            tf.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+            tf.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
+            tf.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
             Transformer trans = tf.newTransformer();
             trans.transform(new DOMSource(signedDocument), new StreamResult(stringWriter));
             return stringWriter.getBuffer().toString();
@@ -84,7 +93,6 @@ public final class DigitalSigner {
     }
 
     private Document sign(Document xmlDoc, boolean includeKeyInfo) throws Exception {
-        // String prov = System.getProperty("jsr105Provider", "org.jcp.xml.dsig.internal.dom.XMLDSigRI");
         XMLSignatureFactory factory = XMLSignatureFactory.getInstance(MEC_TYPE);
         DigestMethod digestMethod = factory.newDigestMethod(DigestMethod.SHA1, null);
         Transform transform = factory.newTransform(Transform.ENVELOPED, (TransformParameterSpec) null);
