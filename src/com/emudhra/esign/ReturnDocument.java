@@ -16,7 +16,6 @@ public final class ReturnDocument {
 
     private String signedDocument;
     private String signedData;
-//    private boolean isPDF;
     private String documentHash;
     private String preSignedDocument;
     private String docInfo;
@@ -45,7 +44,7 @@ public final class ReturnDocument {
 
     protected String getReturnDocumentObjBase64() throws UnsupportedEncodingException {
         String returnDocument = Integer.toString(docId) + "|" + docInfo + "|" + docURL + "|" + documentHash + "|" + preSignedDocument + "|" + (patchSignatureAppearance ? "1" : "0");
-        return org.emcastle.util.encoders.Base64.toBase64String(returnDocument.getBytes("utf-8"));
+        return org.emcastle.util.encoders.Base64.toBase64String(returnDocument.getBytes(StandardCharsets.UTF_8));
     }
 
     public ReturnDocument(String returnDocumentBase64) {

@@ -10,7 +10,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.Security;
 import java.util.ArrayList;
-import java.util.logging.Logger;
 import org.emcastle.jce.provider.emCastleProvider;
 import org.emcastle.util.encoders.Hex;
 
@@ -21,7 +20,6 @@ import org.emcastle.util.encoders.Hex;
  */
 public class eSign {
 
-    private final Logger logger;
     private final String pfxpath;
     private final String password;
     private final String pfxAlias;
@@ -136,7 +134,7 @@ public class eSign {
 
     public eSign(String ASPID, String eSignURL, String eSignURLV2, String pfxpath, String password, String pfxAlias, boolean proxyreq,
             String proxyIp, int proxyPort, int sessionTimeout, eSignSettings.LogType logType, String ProxyUserID, String ProxyUserPassword, String pdfViewerLicence, int SignatureContents) throws NoSuchAlgorithmException {
-        this.logger = EsignLoggerFactory.getLogger(eSign.class, null, logType);
+        EsignLoggerFactory.getLogger(eSign.class, null, logType);
         Security.addProvider(new emCastleProvider());
         this.pfxpath = pfxpath;
         this.password = password;

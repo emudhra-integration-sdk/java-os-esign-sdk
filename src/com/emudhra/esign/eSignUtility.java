@@ -17,6 +17,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
@@ -46,7 +47,7 @@ public final class eSignUtility {
     }
 
     protected static boolean isNullOrWhitespace(String s) {
-        return isNullOrEmpty(s) ? true : isNullOrEmpty(s.trim());
+        return isNullOrEmpty(s) || isNullOrEmpty(s.trim());
     }
 
     protected static String GetXpathValue(XPath xPath, String RequestPath, Document doc) throws XPathExpressionException {
@@ -68,6 +69,12 @@ public final class eSignUtility {
         Document doc = null;
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            factory.setXIncludeAware(false);
+            factory.setExpandEntityReferences(false);
             DocumentBuilder builder;
             builder = factory.newDocumentBuilder();
             doc = builder.parse(new InputSource(new StringReader(xmlStr)));
@@ -81,14 +88,16 @@ public final class eSignUtility {
         TransformerFactory tf = TransformerFactory.newInstance();
         Transformer transformer;
         try {
+            tf.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+            tf.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
+            tf.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
             transformer = tf.newTransformer();
             StringWriter writer = new StringWriter();
             if (omitXMLDeclaration) {
                 transformer.setOutputProperty("omit-xml-declaration", "yes");
             }
             transformer.transform(new DOMSource(doc), new StreamResult(writer));
-            String output = writer.getBuffer().toString();
-            return output;
+            return writer.getBuffer().toString();
         } catch (TransformerException e) {
             throw e;
         }
@@ -192,8 +201,7 @@ public final class eSignUtility {
         try {
 
             DigitalSigner ds = new DigitalSigner(filepath, password.toCharArray(), pfxAlias);
-            String XmlSigned = ds.signXML(xml, true);
-            return XmlSigned;
+            return ds.signXML(xml, true);
 
         } catch (Exception ex) {
             throw ex;
@@ -204,8 +212,7 @@ public final class eSignUtility {
         try {
 
             DigitalSignerNew ds = new DigitalSignerNew(filepath, password.toCharArray(), pfxAlias);
-            String XmlSigned = ds.signXML(xml, true);
-            return XmlSigned;
+            return ds.signXML(xml, true);
 
         } catch (Exception ex) {
             throw ex;
@@ -235,7 +242,6 @@ public final class eSignUtility {
     }
 
     protected static boolean allDocumentHaveError(ArrayList<ReturnDocument> returnDocuments) {
-        int docsWithError = 0;
         try {
             for (ReturnDocument r : returnDocuments) {
                 if (!isNullOrWhitespace(r.getErrorMessage())) {
@@ -322,8 +328,7 @@ public final class eSignUtility {
             SignReqTag.appendChild(SignatoryInfoTag);
 
             document.appendChild(SignReqTag);
-            String outXML = convertDocumentToString(document, false);
-            return outXML;
+            return convertDocumentToString(document, false);
         } catch (ParserConfigurationException | TransformerException | DOMException e) {
             throw e;
         }
@@ -397,8 +402,7 @@ public final class eSignUtility {
         eSignTag.setAttributeNode(aspIdAttr);
 
         document.appendChild(eSignTag);
-        String outXML = convertDocumentToString(document, false);
-        return outXML;
+        return convertDocumentToString(document, false);
     }
 
     protected static String validatePageLevelCordinate(String pagelevelCoordinate, boolean isContentSearch, PdfEngine engine, byte[] pdfBytes) throws Exception {
@@ -468,7 +472,6 @@ public final class eSignUtility {
 
             Attr signingAlgorithmAttr = document.createAttribute("signingAlgorithm");
             signingAlgorithmAttr.setValue("ECDSA");
-//            signingAlgorithmAttr.setValue("RSA");
             eSignTag.setAttributeNode(signingAlgorithmAttr);
 
             Attr maxWaitPeriodAttr = document.createAttribute("maxWaitPeriod");
@@ -509,8 +512,7 @@ public final class eSignUtility {
             }
             eSignTag.appendChild(docsTag);
             document.appendChild(eSignTag);
-            String outXML = convertDocumentToString(document, false);
-            return outXML;
+            return convertDocumentToString(document, false);
         } catch (Exception e) {
             throw e;
         }
@@ -527,8 +529,6 @@ public final class eSignUtility {
             verAttr.setValue("2.1");
             eSignTag.setAttributeNode(verAttr);
 
-//            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
-//            ts = sdf.format(new Date());
             Attr tsAttr = document.createAttribute("ts");
             tsAttr.setValue(ts);
             eSignTag.setAttributeNode(tsAttr);
@@ -591,8 +591,7 @@ public final class eSignUtility {
             }
             eSignTag.appendChild(docsTag);
             document.appendChild(eSignTag);
-            String outXML = convertDocumentToString(document, false);
-            return outXML;
+            return convertDocumentToString(document, false);
         } catch (Exception e) {
             throw e;
         }
@@ -608,7 +607,7 @@ public final class eSignUtility {
                 tempData = tempData + returnDocument.getReturnDocumentObjBase64() + "|";
 
             }
-            return org.emcastle.util.encoders.Base64.toBase64String(tempData.getBytes("utf-8"));
+            return org.emcastle.util.encoders.Base64.toBase64String(tempData.getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
             throw e;
         }
