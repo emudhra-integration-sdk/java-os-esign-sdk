@@ -16,6 +16,7 @@ import org.emcastle.asn1.x500.X500Name;
 import org.emcastle.asn1.x500.style.BCStyle;
 import org.emcastle.asn1.x500.style.IETFUtils;
 import org.emcastle.asn1.x509.X509CertificateStructure;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
@@ -24,7 +25,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.PublicKey;
 import java.security.Security;
+import java.security.cert.CertificateFactory;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -33,6 +36,7 @@ import java.util.List;
 import java.util.TimeZone;
 import java.util.UUID;
 import java.util.logging.Logger;
+import javax.crypto.Cipher;
 import javax.crypto.NoSuchPaddingException;
 import javax.xml.xpath.XPath;
 import javax.xml.xpath.XPathFactory;
@@ -454,6 +458,51 @@ public final class eSignImplimentation {
                 requestXML = eSignUtility.generateRequestXML(returnDocuments, signerID, eSignSettings.getASPID(), responseUrl, redirectUrl, transactionID, timeStamp, maxWaitPeriod, isLTVRequired);
             }
             String signedRequestXML = eSignUtility.signXMLAndroid(requestXML, pfxpath, password, pfxAlias);
+            // Encrypted Aadhaar flow: skip gateway API call, build wrapper XML instead.
+            EncryptedAadhaarConfig aadhaarConfig = selectEncryptedAadhaarConfig(inputs);
+            if (aadhaarConfig != null) {
+                String safeTransactionID = logValue(transactionID);
+                try {
+                    String aadhaar = aadhaarConfig.getAadhaarNumber();
+                    if (!isValidAadhaarNumber(aadhaar)) {
+                        LOGGER.warning("Encrypted Aadhaar flow: supplied Aadhaar number failed the mandatory format check for txn: " + safeTransactionID);
+                        serviceReturnObj.setTransactionID(transactionID);
+                        serviceReturnObj.setPreSignedTempFile(tempFilePath);
+                        serviceReturnObj.setErrorCode("ESS-130");
+                        serviceReturnObj.setStatus(0);
+                        serviceReturnObj.setErrorMessage("Invalid Aadhaar number: must be exactly 12 digits with no spaces or separators.");
+                        return serviceReturnObj;
+                    }
+                    PublicKey publicKey = loadPublicKeyFromConfig(aadhaarConfig);
+                    String encryptedAadhaar = encryptAadhaar(aadhaar, publicKey);
+                    String base64SignedXML = new String(Base64.encode(signedRequestXML.getBytes(StandardCharsets.UTF_8)), StandardCharsets.UTF_8);
+                    String wrapperXML = buildEncryptedAadhaarWrapperXML(transactionID, encryptedAadhaar, base64SignedXML);
+                    String gatewayParam = URLEncoder.encode(wrapperXML, "UTF-8");
+                    serviceReturnObj.setRequestXML(signedRequestXML);
+                    serviceReturnObj.setPreSignedTempFile(tempFilePath);
+                    serviceReturnObj.setTransactionID(transactionID);
+                    serviceReturnObj.setReturnValues(returnDocuments);
+                    serviceReturnObj.setGatewayParameter(gatewayParam);
+                    serviceReturnObj.setStatus(1);
+                    return serviceReturnObj;
+                } catch (IllegalArgumentException e) {
+                    LOGGER.warning("Encrypted Aadhaar flow: certificate configuration rejected for txn: " + safeTransactionID + " - " + logValue("" + e));
+                    serviceReturnObj.setTransactionID(transactionID);
+                    serviceReturnObj.setPreSignedTempFile(tempFilePath);
+                    serviceReturnObj.setErrorCode("ESS-131");
+                    serviceReturnObj.setStatus(0);
+                    serviceReturnObj.setErrorMessage("Encrypted Aadhaar certificate configuration is invalid. See the SDK log for details.");
+                    return serviceReturnObj;
+                } catch (Exception e) {
+                    LOGGER.warning("Encrypted Aadhaar flow: Aadhaar encryption failed for txn: " + safeTransactionID + " - " + logValue("" + e));
+                    serviceReturnObj.setTransactionID(transactionID);
+                    serviceReturnObj.setPreSignedTempFile(tempFilePath);
+                    serviceReturnObj.setErrorCode("ESS-132");
+                    serviceReturnObj.setStatus(0);
+                    serviceReturnObj.setErrorMessage("Encrypted Aadhaar processing failed. See the SDK log for details.");
+                    return serviceReturnObj;
+                }
+            }
             String URLEncodedsignedRequestXML = URLEncoder.encode(signedRequestXML, "UTF-8");
             serviceReturnObj.setRequestXML(signedRequestXML);
             String responseXML = "";
@@ -531,6 +580,157 @@ public final class eSignImplimentation {
             serviceReturnObj.setErrorMessage(e.getMessage());
             return serviceReturnObj;
         }
+    }
+
+    private static EncryptedAadhaarConfig selectEncryptedAadhaarConfig(ArrayList<eSignInput> inputs) {
+        for (eSignInput inp : inputs) {
+            if (inp.isEncryptedAadhaarFlowEnabled() && inp.getEncryptedAadhaarConfig() != null) {
+                return inp.getEncryptedAadhaarConfig();
+            }
+        }
+        return null;
+    }
+
+    private static boolean isValidAadhaarNumber(String aadhaar) {
+        if (aadhaar == null || !aadhaar.matches("\\d{12}")) {
+            return false;
+        }
+        return true;
+    }
+
+    private static boolean isPathSeparator(char c) {
+        return c == '\\' || c == '/';
+    }
+
+    private static byte[] resolveCertificateBytes(EncryptedAadhaarConfig config) throws Exception {
+        byte[] cerBytes;
+        if (config.getCerFilePath() != null) {
+            String cerFilePath = config.getCerFilePath();
+            if (cerFilePath.length() > 1 && isPathSeparator(cerFilePath.charAt(0)) && isPathSeparator(cerFilePath.charAt(1))) {
+                throw new IllegalArgumentException("EncryptedAadhaarConfig cerFilePath must be a local path; UNC and network paths are not permitted.");
+            }
+            cerBytes = Files.readAllBytes(new File(cerFilePath).toPath());
+        } else if (config.getCerBase64() != null) {
+            cerBytes = Base64.decode(config.getCerBase64());
+        } else {
+            throw new IllegalArgumentException("EncryptedAadhaarConfig must specify either a CER file path or base64 certificate data.");
+        }
+        return cerBytes;
+    }
+
+    private PublicKey loadPublicKeyFromConfig(EncryptedAadhaarConfig config) throws Exception {
+        byte[] cerBytes = resolveCertificateBytes(config);
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        java.security.cert.Certificate cert = cf.generateCertificate(new ByteArrayInputStream(cerBytes));
+        PublicKey key = cert.getPublicKey();
+        if (!"RSA".equals(key.getAlgorithm())) {
+            throw new IllegalArgumentException("Aadhaar public key must be RSA; found: " + key.getAlgorithm());
+        }
+        logCertificateIdentity(cert);
+        return key;
+    }
+
+    private static void logCertificateIdentity(java.security.cert.Certificate cert) {
+        try {
+            if (!(cert instanceof java.security.cert.X509Certificate)) {
+                return;
+            }
+            java.security.cert.X509Certificate x509 = (java.security.cert.X509Certificate) cert;
+            String fingerprint;
+            try {
+                MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+                fingerprint = Hex.toHexString(sha256.digest(x509.getEncoded())).toUpperCase();
+            } catch (Exception e) {
+                fingerprint = "unavailable";
+            }
+            LOGGER.warning("Encrypted Aadhaar flow: encrypting with certificate subject=" + logValue("" + x509.getSubjectX500Principal())
+                    + " issuer=" + logValue("" + x509.getIssuerX500Principal())
+                    + " serial=" + logValue("" + x509.getSerialNumber())
+                    + " sha256=" + fingerprint
+                    + " notBefore=" + logValue("" + x509.getNotBefore())
+                    + " notAfter=" + logValue("" + x509.getNotAfter()));
+            try {
+                x509.checkValidity();
+            } catch (Exception e) {
+                LOGGER.warning("Encrypted Aadhaar flow: certificate is OUTSIDE its validity window - continuing anyway - subject=" + logValue("" + x509.getSubjectX500Principal())
+                        + " serial=" + logValue("" + x509.getSerialNumber())
+                        + " notBefore=" + logValue("" + x509.getNotBefore())
+                        + " notAfter=" + logValue("" + x509.getNotAfter())
+                        + " - " + logValue("" + e));
+            }
+        } catch (Exception e) {
+            LOGGER.warning("Encrypted Aadhaar flow: unable to log certificate identity - " + logValue("" + e));
+        }
+    }
+
+    private String encryptAadhaar(String aadhaarNumber, PublicKey publicKey) throws Exception {
+        Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+        cipher.init(Cipher.ENCRYPT_MODE, publicKey);
+        byte[] encryptedBytes = cipher.doFinal(aadhaarNumber.getBytes(StandardCharsets.UTF_8));
+        return new String(Base64.encode(encryptedBytes), StandardCharsets.UTF_8);
+    }
+
+    private static String buildEncryptedAadhaarWrapperXML(String transactionID, String encryptedAadhaar, String base64SignedXML) {
+        return "<eSignXML>"
+                + "<EncryptedAadhaar txn=\"" + escapeXmlAttributeValue(transactionID) + "\">" + encryptedAadhaar + "</EncryptedAadhaar>"
+                + "<Base64eSignXML>" + base64SignedXML + "</Base64eSignXML>"
+                + "</eSignXML>";
+    }
+
+    private static String escapeXmlAttributeValue(String value) {
+        if (value == null) {
+            return "";
+        }
+        StringBuilder escaped = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '&') {
+                escaped.append("&amp;");
+            } else if (c == '<') {
+                escaped.append("&lt;");
+            } else if (c == '>') {
+                escaped.append("&gt;");
+            } else if (c == '\"') {
+                escaped.append("&quot;");
+            } else if (c == '\'') {
+                escaped.append("&apos;");
+            } else if (c == '\t') {
+                escaped.append("&#9;");
+            } else if (c == '\n') {
+                escaped.append("&#10;");
+            } else if (c == '\r') {
+                escaped.append("&#13;");
+            } else if (c < 0x20 || c == 0x7F) {
+                // Control characters other than tab/CR/LF cannot be represented in XML 1.0 at all - drop them.
+            } else {
+                escaped.append(c);
+            }
+        }
+        return escaped.toString();
+    }
+
+    private static String sanitizeForLog(String value) {
+        if (value == null) {
+            return "";
+        }
+        StringBuilder sanitized = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '\r' || c == '\n' || c < 0x20 || c == 0x7F) {
+                sanitized.append(' ');
+            } else {
+                sanitized.append(c);
+            }
+        }
+        return sanitized.toString();
+    }
+
+    private static String logValue(String value) {
+        String sanitized = sanitizeForLog(value);
+        if (sanitized.length() > 256) {
+            sanitized = sanitized.substring(0, 256) + "...";
+        }
+        return "\"" + sanitized.replace('\"', '\'') + "\"";
     }
 
     protected eSignServiceReturn getSigedDocument(String responseXML, String tempFilePath, int SignatureContents) {
