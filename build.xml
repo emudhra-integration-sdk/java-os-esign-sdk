@@ -6,7 +6,7 @@
     <property name="classes.dir" value="${build.dir}/classes"/>
     <property name="dist.dir"    value="dist"/>
     <property name="lib.dir"     value="lib"/>
-    <property name="jar.name"    value="eSignASPLibrary5_11.jar"/>
+    <property name="jar.name"    value="eSignASPLibrary5_12.jar"/>
 
     <!-- Classpath: all JARs in lib/ -->
     <path id="compile.classpath">
@@ -40,7 +40,7 @@
         <jar destfile="${dist.dir}/${jar.name}" basedir="${classes.dir}">
             <manifest>
                 <attribute name="Implementation-Title"   value="eSign ASP Library"/>
-                <attribute name="Implementation-Version" value="5.11"/>
+                <attribute name="Implementation-Version" value="5.12"/>
                 <attribute name="Built-By"               value="eMudhra Limited"/>
             </manifest>
         </jar>
