@@ -154,7 +154,7 @@ ant compile
 ant clean
 ```
 
-Output JAR: `dist/eSignASPLibrary5_11.jar`
+Output JAR: `dist/eSignASPLibrary5_12.jar`
 
 ## Dependencies
 
