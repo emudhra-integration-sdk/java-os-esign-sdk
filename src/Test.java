@@ -1,5 +1,6 @@
 
 import com.emudhra.esign.ContentSearch;
+import com.emudhra.esign.EncryptedAadhaarConfig;
 import com.emudhra.esign.ReturnDocument;
 import com.emudhra.esign.eSign;
 import com.emudhra.esign.eSignInput;
@@ -46,7 +47,7 @@ public class Test {
             mode = args[0].trim().toLowerCase();
         } else {
             System.out.println("Select mode: first | last | all | even | odd | specify | "
-                    + "pagelevel | contentsearch");
+                    + "pagelevel | contentsearch | encryptedaadhaar");
             System.out.print("Mode [pagelevel]: ");
             Scanner scanner = new Scanner(System.in);
             String entered = scanner.hasNextLine() ? scanner.nextLine().trim() : "";
@@ -178,9 +179,16 @@ public class Test {
                         .setPageLevelCoordinates("a-425,100,545,160;") // dummy: clears the ESS-120 guard only
                         .build();
                 break;
+            case "encryptedaadhaar": // Aadhaar pre-filled at the eMudhra gateway (GATEWAY flow)
+                // Completely different lifecycle from every case above: this one talks to the
+                // eMudhra gateway instead of returning a hash for your own signer, so it runs
+                // end to end in its own method and never reaches the prepare/sign/append path
+                // below.
+                runEncryptedAadhaarFlow(pdfBase64, tempFolder, transactionID);
+                return;
             default:
                 System.out.println("Unknown mode '" + mode + "'. Valid: first|last|all|even|odd|"
-                        + "specify|pagelevel|contentsearch");
+                        + "specify|pagelevel|contentsearch|encryptedaadhaar");
                 return;
         }
 
@@ -222,6 +230,150 @@ public class Test {
     }
 
     /**
+     * The Encrypted Aadhaar eSign flow, step by step.
+     *
+     * <p>This is a GATEWAY flow, not the vendor-agnostic one main() otherwise demonstrates.
+     * The signer authenticates on eMudhra's page in between, so the lifecycle splits across
+     * two separate HTTP requests: everything below is phase 1, and phase 2 is sketched at the
+     * bottom because it can only run inside your callback endpoint.
+     *
+     * <p>What it buys you: the signer's Aadhaar number arrives pre-filled at the gateway
+     * instead of being typed there. Sharing an Aadhaar number from an ASP to an ESP requires
+     * UIDAI approval - do not enable this in production without it.
+     *
+     * <p>The flow is OFF by default and cannot fire by accident: it needs BOTH
+     * setEncryptedAadhaarFlowEnabled(true) AND setEncryptedAadhaarConfig(...) on the input.
+     */
+    private static void runEncryptedAadhaarFlow(String pdfBase64, String tempFolder, String transactionID) throws Exception {
+
+        // ---- Step 0: configuration ----
+        // ASP credentials come from your eMudhra onboarding. The PFX signs the request XML that
+        // travels inside the wrapper. Both gateway URLs are still required by the constructor
+        // even though phase 1 of this flow never POSTs to either of them.
+        String aspID       = "YOUR_ASP_ID";
+        String eSignURL    = "https://authenticate.sandbox.emudhra.com/eSignV3";      // V3/PAN - unused here
+        String eSignURLV2  = "https://authenticate.sandbox.emudhra.com/eSignV2";      // V2/Aadhaar
+        String pfxPath     = "C:\\path\\to\\asp-signing.pfx";
+        String pfxPassword = "changeit";
+        String pfxAlias    = "asp-alias";
+        int    signatureContents = 21000;
+
+        String signerID    = "signer@example.com";                                      // your own reference for the signer
+        String responseUrl = "https://your-app.example.com/ResponseEncryptedAadhaar";   // eMudhra POSTs the result here
+        String redirectUrl = "https://your-app.example.com/done";                       // browser lands here afterwards
+
+        // PII: never log this, never commit a real one.
+        String aadhaarNumber = "123456789012";   // exactly 12 digits, no spaces or separators -> else ESS-130
+
+        // The RSA public-key certificate whose PRIVATE half eMudhra's HSM holds. Get it from your
+        // onboarding contact and confirm the fingerprint with them. The SDK is issuer-neutral: it
+        // checks only that the file parses as X.509 and that the key is RSA - no chain, no issuer,
+        // no revocation check, and an EXPIRED certificate is accepted with a log warning. So the
+        // wrong certificate still produces a well-formed request that getGatewayParameter()
+        // reports as SUCCESS; the failure surfaces only on the gateway page.
+        //
+        // MUST come from trusted server-side configuration. Never from an HTTP request parameter:
+        // a path beginning with two separators (\\host\share, //host/share, \/host/...) is
+        // rejected with ESS-131 because on Windows it would trigger an outbound SMB fetch.
+        String cerFilePath = "C:\\path\\to\\aadhaar-encryption.cer";   // DER or PEM both parse
+
+        // ---- Step 1: describe the Aadhaar number and the certificate to the SDK ----
+        EncryptedAadhaarConfig aadhaarConfig = new EncryptedAadhaarConfig();
+        aadhaarConfig.setAadhaarNumber(aadhaarNumber);
+        aadhaarConfig.setCerFilePath(cerFilePath);
+        // Alternative for request-driven scenarios, where cerFilePath would be unsafe:
+        //     byte[] raw = Files.readAllBytes(new File(cerFilePath).toPath());
+        //     aadhaarConfig.setCerBase64(Base64.getEncoder().encodeToString(raw));
+        // That is Base64 of the raw FILE BYTES. Pasting PEM text straight in, with its
+        // "-----BEGIN CERTIFICATE-----" header, is not valid Base64 and returns ESS-132.
+
+        // ---- Step 2: build the input with the flow switched on ----
+        // Both calls are required; either one alone leaves the standard gateway path untouched.
+        eSignInput input = eSignInputBuilder.init()
+                .setDocBase64(pdfBase64)
+                .setDocInfo("Agreement")
+                .setSignedBy("ABC N")
+                .setReason("Approval")
+                .setLocation("Bengaluru")
+                .setAppearanceType(eSign.AppearanceType.StandardSignature)
+                .setBorderRequired(true)
+                .setPageTobeSigned(eSign.PageTobeSigned.Last)
+                .setCoordinates(eSign.Coordinates.BottomRight)
+                .setPageLevelCoordinates("a-425,100,545,160;") // dummy: clears the ESS-120 guard only
+                .setEncryptedAadhaarFlowEnabled(true)
+                .setEncryptedAadhaarConfig(aadhaarConfig)
+                .build();
+
+        // One document per Aadhaar transaction. The SDK does not enforce this - it will happily
+        // build a wrapper for several - but the gateway is not expected to accept them.
+        ArrayList<eSignInput> inputs = new ArrayList<>();
+        inputs.add(input);
+
+        // ---- Step 3: gateway-mode eSign object ----
+        // Note this takes ASP credentials, unlike the credential-free constructor main() uses.
+        eSign esignObj = new eSign(aspID, eSignURL, eSignURLV2, pfxPath, pfxPassword, pfxAlias, signatureContents);
+
+        // ---- Step 4: phase 1 - pre-sign the PDF and build the encrypted wrapper ----
+        // With the flow on, getGatewayParameter() does NOT call the gateway. It pre-signs the
+        // PDF, RSA-encrypts the Aadhaar (RSA/ECB/PKCS1Padding, Base64) with your certificate,
+        // and returns the URL-encoded <eSignXML> wrapper locally. V2/Aadhaar is the intended
+        // combination.
+        eSignServiceReturn prepared = esignObj.getGatewayParameter(
+                inputs, signerID, transactionID, responseUrl, redirectUrl, tempFolder,
+                eSign.eSignAPIVersion.V2, eSign.AuthMode.OTP);
+
+        if (prepared.getStatus() != 1) {
+            // ESS-130  Aadhaar number is not exactly 12 digits
+            // ESS-131  no certificate configured, public key is not RSA, or cerFilePath is a
+            //          UNC/network path
+            // ESS-132  certificate could not be read, decoded or parsed (missing file, corrupt
+            //          base64, malformed DER), or the encryption call itself failed
+            // The returned message is deliberately vague - exception text and filesystem paths
+            // are kept out of it on purpose. The real cause is in logs/eSign.log.
+            System.out.println("getGatewayParameter failed: " + prepared.getErrorCode()
+                    + " - " + prepared.getErrorMessage());
+            return;
+        }
+
+        String gatewayParam = prepared.getGatewayParameter();   // URL-encoded <eSignXML> wrapper
+        String tempFile     = prepared.getPreSignedTempFile();  // MUST survive until phase 2
+
+        System.out.println("Transaction ID    : " + prepared.getTransactionID());
+        System.out.println("Temp .sig file    : " + tempFile);
+        System.out.println("Gateway param len : " + gatewayParam.length());
+
+        // Verify WHICH certificate actually encrypted the Aadhaar. The SDK logs subject, issuer,
+        // serial and SHA-256 on every call precisely so a substituted key is detectable. Pin any
+        // monitoring on the SHA-256, not the DN - the DN is chosen by whoever issued the cert.
+        // This record is written at WARNING level, so LogType.NoLog suppresses it entirely.
+        System.out.println("Certificate used  : see logs/eSign.log -> "
+                + "\"Encrypted Aadhaar flow: encrypting with certificate\"");
+
+        // ---- Step 5: POST the wrapper to the gateway ----
+        // Render this as a self-submitting form in the signer's browser. They authenticate with
+        // Aadhaar OTP on eMudhra's page, with the Aadhaar field already filled in.
+        System.out.println("<form method=\"POST\" action=\"https://authenticate.sandbox.emudhra.com/AadhaareSign.jsp\">");
+        System.out.println("  <input type=\"hidden\" name=\"txnref\" value=\"" + gatewayParam + "\" />");
+        System.out.println("  <input type=\"submit\" value=\"Sign with Aadhaar\" />");
+        System.out.println("</form>");
+
+        // ---- Step 6: phase 2 - inject the returned signature (A SEPARATE HTTP REQUEST) ----
+        // eMudhra POSTs to your responseUrl with form parameters "txnref" and "XML". That handler
+        // needs the tempFile path from step 4, so persist it across the two requests (session,
+        // cache, or a DB row keyed by transaction ID). Phase 2 is identical to the ordinary
+        // Aadhaar flow - the encrypted flow changes nothing here:
+        //
+        //     String responseXML = request.getParameter("XML");
+        //     eSignServiceReturn signed = esignObj.getSigedDocument(responseXML, tempFile);
+        //     if (signed.getStatus() == 1) {
+        //         String signedPdfBase64 = signed.getReturnDocuments().get(0).getSignedDocument();
+        //         Files.write(new File(outputPath).toPath(), Base64.getDecoder().decode(signedPdfBase64));
+        //     }
+        System.out.println("Phase 2 runs in your callback at " + responseUrl
+                + " - see the commented block in " + Test.class.getSimpleName() + ".");
+    }
+
+    /**
      * Prints the extractable text of every page two ways:
      *   [readable] — PDFTextStripper output (with spaces) so you can eyeball the content.
      *   [findText sees] — every glyph's unicode concatenated with NO spaces, which is
@@ -251,6 +403,7 @@ public class Test {
             }
             System.out.println("==== END DUMP ====");
         }
+      
     }
 
     /**
