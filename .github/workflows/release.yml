@@ -1,0 +1,49 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v5.13)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+
+      - name: Install Apache Ant
+        run: sudo apt-get update -q && sudo apt-get install -y ant
+
+      - name: Build JAR
+        run: ant jar
+
+      - name: Package dependencies
+        run: |
+          echo "JAR=$(ls dist/eSignASPLibrary*.jar)" >> "$GITHUB_ENV"
+          (cd lib && zip -q ../dependencies.zip *.jar)
+
+      - name: Resolve tag
+        run: echo "TAG=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_ENV"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$TAG" --target "$GITHUB_SHA" \
+            --title "eSign Java SDK $TAG" --generate-notes \
+            "$JAR" dependencies.zip
