@@ -44,6 +44,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$TAG" --target "$GITHUB_SHA" \
-            --title "eSign Java SDK $TAG" --generate-notes \
-            "$JAR" dependencies.zip
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$JAR" dependencies.zip --clobber
+          else
+            gh release create "$TAG" --target "$GITHUB_SHA" \
+              --title "eSign Java SDK $TAG" --generate-notes \
+              "$JAR" dependencies.zip
+          fi
