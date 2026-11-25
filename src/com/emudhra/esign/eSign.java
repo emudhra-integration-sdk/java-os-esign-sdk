@@ -134,7 +134,8 @@ public class eSign {
 
     public eSign(String ASPID, String eSignURL, String eSignURLV2, String pfxpath, String password, String pfxAlias, boolean proxyreq,
             String proxyIp, int proxyPort, int sessionTimeout, eSignSettings.LogType logType, String ProxyUserID, String ProxyUserPassword, String pdfViewerLicence, int SignatureContents) throws NoSuchAlgorithmException {
-        EsignLoggerFactory.getLogger(eSign.class, null, logType);
+        java.util.logging.Logger logger = EsignLoggerFactory.getLogger(eSign.class, null, logType);
+        eSignSettings.setLogType(logType);   // persist so initFileHandler uses the right level
         Security.addProvider(new emCastleProvider());
         this.pfxpath = pfxpath;
         this.password = password;
@@ -150,8 +151,23 @@ public class eSign {
         eSignSettings.setESIGNURL(eSignURL);
         eSignSettings.setESIGNURLV2(eSignURLV2);
 
+        // The path-encryption key derives from the ASPID alone. Set it always,
+        // so getEncryptedPath() and the PDF viewer kit work without a viewer licence file.
+        eSignSettings.setEncryptionKey(getSha256("PDF_VIEWER_KIT_101" + ASPID));
+
         if (pdfViewerLicence != null) {
-            eSignSettings.setEncryptionKey(getSha256("PDF_VIEWER_KIT_101" + ASPID));
+            // Older emPDFViewer kits gate on ValidateKitLicence.IsValidLicence().
+            // Reflection, because that class ships compiled-only and must not be a
+            // compile-time dependency.
+            try {
+                java.lang.reflect.Method validate = Class
+                        .forName("com.emudhra.esign.ValidateKitLicence")
+                        .getDeclaredMethod("validateKitLicence", String.class);
+                validate.setAccessible(true);
+                validate.invoke(null, pdfViewerLicence);
+            } catch (Throwable t) {
+                logger.warning("PDF viewer kit licence validation skipped: " + t);
+            }
         }
     }
 
@@ -177,8 +193,38 @@ public class eSign {
     }
 
     public eSignServiceReturn getSigedDocument(String eSignResponse, String preSignedTempFile) {
+        return getSigedDocument(eSignResponse, preSignedTempFile, null);
+    }
+
+    /**
+     * Phase 2 with a caller-supplied visible signature appearance.
+     *
+     * <p>The appearance controls the header line, which of name / Aadhaar /
+     * reason / location / date are drawn, their labels, and the block's layout.
+     * Supplying one is enough to add the post-sign details overlay —
+     * {@code showAadhaarOnSignature} need not be set on the input. Pass
+     * {@code null} for the default behaviour.
+     *
+     * <p>On success {@link eSignServiceReturn#getSignerCertificateInfo()} carries
+     * the details of the signer certificate returned by the gateway.
+     */
+    public eSignServiceReturn getSigedDocument(String eSignResponse, String preSignedTempFile, AadhaarSignatureAppearance appearance) {
         eSignImplimentation impl = new eSignImplimentation(pfxpath, password, pfxAlias, proxyIp, proxyPort, proxyreq);
-        return impl.getSigedDocument(eSignResponse, preSignedTempFile, SignatureContents);
+        return impl.getSigedDocument(eSignResponse, preSignedTempFile, SignatureContents, appearance);
+    }
+
+    /**
+     * Verifies the eSign signature over the hash that was sent, and optionally checks
+     * the signer certificate for revocation via OCSP, falling back to CRL.
+     *
+     * @param sha256Hex       the SHA-256 hex that was signed: your digest in hash mode,
+     *                        or ReturnDocument.getDocumentHash() for a PDF signing
+     * @param esignRespXml    the gateway's EsignResp XML, or just the Base64 PKCS#7
+     * @param checkRevocation whether to query OCSP (then CRL); adds a network round trip
+     * @return the outcome; never throws. isValid() is the single success flag.
+     */
+    public eSignVerificationResult verifyEsignResponseHash(String sha256Hex, String esignRespXml, boolean checkRevocation) {
+        return eSignVerifier.verifyResponseHash(sha256Hex, esignRespXml, checkRevocation);
     }
 
     public eSignServiceReturn getEncryptedPath(String path) {

@@ -11,7 +11,11 @@ This guide shows how to integrate the eSign Java SDK into common Java web framew
 - [JSP](#jsp)
 - [Struts](#struts)
 - [Plain Java (Console)](#plain-java-console)
+- [Encrypted Aadhaar Flow — Spring Boot Example](#encrypted-aadhaar-flow--spring-boot-example)
 - [Common Patterns](#common-patterns)
+  - [Customising the Signature Appearance](#customising-the-signature-appearance)
+  - [Branding the Aadhaar Page with custUI](#branding-the-aadhaar-page-with-custui)
+  - [Verifying the Returned Signature](#verifying-the-returned-signature)
 
 ---
 
@@ -25,9 +29,9 @@ Add the SDK JAR and dependencies to your project. If using Maven with local JARs
 <dependency>
     <groupId>com.emudhra</groupId>
     <artifactId>eSignASPLibrary</artifactId>
-    <version>5.12</version>
+    <version>5.13</version>
     <scope>system</scope>
-    <systemPath>${project.basedir}/lib/eSignASPLibrary5_12.jar</systemPath>
+    <systemPath>${project.basedir}/lib/eSignASPLibrary5_13.jar</systemPath>
 </dependency>
 <!-- Add all JARs from lib/ similarly, or copy them to a shared lib folder -->
 ```
@@ -885,6 +889,72 @@ public class ESignTest {
 
 ## Common Patterns
 
+### Customising the Signature Appearance
+
+Every Phase 2 example above calls the two-argument
+`getSigedDocument(responseXML, tempFile)`, which draws the SDK's default block.
+A third argument controls what the visible signature shows — the same code works
+in Spring Boot, Servlet, JSP, Struts and plain Java:
+
+```java
+AadhaarSignatureAppearance appearance = new AadhaarSignatureAppearance();
+appearance.setContentLines(Arrays.asList(
+        "E-Signed By: {name}",
+        "Date: {date}",
+        "Reason: {reason}",
+        "Location: {location}"));
+appearance.setDateFormat("dd/MM/yyyy HH:mm:ss z");
+appearance.setTimeZone("IST");
+appearance.setItalic(true);
+appearance.setShowAadhaar(false);
+
+eSignServiceReturn result =
+        esignClient.getSigedDocument(responseXML, tempFile, appearance);
+```
+```
+E-Signed By: Ravi Kumar
+Date: 04/08/2026 14:10:26 IST
+Reason: Digital Signature
+Location: India
+```
+
+Placeholders: `{name}` (certificate CN, or `signerName` if you set one),
+`{certName}`, `{aadhaar}` (masked), `{aadhaarDigits}`, `{reason}`, `{location}`,
+`{date}`. A line whose placeholders all resolve empty is dropped, so optional
+values never leave a dangling label behind.
+
+Passing an appearance is enough to trigger the signer-details stamp. For
+`StandardSignature`, also set `setShowAadhaarOnSignature(true)` on the Phase 1
+input so the signed box is left blank — viewers paint the box above the stamp, so
+any Phase 1 text would show through. The two-argument overload is unchanged, so
+existing code keeps its current output.
+
+The appearance object is per-call and holds no static state, so build a fresh one
+per request even though `eSign` itself must be a singleton (see Thread Safety
+below). See
+[Customising the Aadhaar Appearance](QUICK_START.md#customising-the-aadhaar-appearance)
+for every setting, structured mode, and 16 worked scenarios.
+
+### Reading the Signer Certificate
+
+Phase 2 also returns the certificate the gateway signed with,
+whether or not an appearance was passed:
+
+```java
+SignerCertificateInfo cert = result.getSignerCertificateInfo();
+if (cert != null) {                      // null when absent or unparsable
+    log.info("signed by {} (Aadhaar {}), issued by {}, valid to {}",
+            cert.getSubjectCommonName(), cert.getAadhaarNumber(),
+            cert.getIssuerCommonName(), cert.getNotAfter());
+}
+```
+
+Useful for audit records: it also exposes `getSubjectDN()`, `getIssuerDN()`,
+`getSerialNumber()`, `getNotBefore()`, `getSignatureAlgorithm()`,
+`getPublicKeyAlgorithm()`, `getKeySize()`, `getSha256Thumbprint()` and
+`getCertificateBase64()`. A certificate parse failure never fails an otherwise
+successful signing, so always null-check.
+
 ### Thread Safety
 
 The `eSign` constructor sets static fields on `eSignSettings` (ASP ID, URLs, proxy config). This means:
@@ -950,6 +1020,23 @@ for (ReturnDocument doc : result.getReturnDocuments()) {
 }
 ```
 
+### Positioning Text Inside the Signature Box
+
+By default text is drawn from the top-left corner of the signature box. Use `setTextContentPosition` to change the anchor point. Works with `StandardSignature` and the Aadhaar stamp:
+
+```java
+eSignInput input = eSignInputBuilder.init()
+    .setDocBase64(pdfBase64)
+    .setDocInfo("Agreement")
+    .setAppearanceType(eSign.AppearanceType.StandardSignature)
+    .setPageTobeSigned(eSign.PageTobeSigned.Last)
+    .setCoordinates(eSign.Coordinates.BottomRight)
+    .setTextContentPosition(eSign.Coordinates.BottomLeft)  // text anchored at bottom-left
+    .build();
+```
+
+Available positions: `TopLeft` (default), `TopMiddle`, `TopRight`, `CenterLeft`, `CenterMiddle`, `CenterRight`, `BottomLeft`, `BottomMiddle`, `BottomRight`. No Phase 2 changes are needed — the setting is stored in the temp file and applied automatically.
+
 ### Password-Protected PDFs
 
 If the PDF is password-protected, provide the password via the builder:
@@ -961,3 +1048,283 @@ eSignInput input = eSignInputBuilder.init()
     // ... other settings
     .build();
 ```
+
+---
+
+### Branding the Aadhaar Page with custUI
+
+`custUI` is a gateway parameter, not an SDK call: you add it to the same form post or
+redirect that carries `XML`. Build it wherever you build the redirect — the pattern is
+identical in Spring Boot, Servlet, JSP and Struts.
+
+```java
+@PostMapping("/sign")
+public String sign(Model model) throws Exception {
+    eSignServiceReturn result = esignObj.getGatewayParameter(/* ... */);
+
+    String custUiJson = new JSONObject()
+            .put("userAadhaarLast4Digit", last4)   // gateway stops signing on mismatch
+            .put("buttonColour", "#f76618")   // keep the '#': see QUICK_START
+            .put("headerColour", "#0171c9")
+            .put("logoURL", "https://cdn.example.com/brand/logo.png")
+            .toString();
+
+    model.addAttribute("gatewayParam", result.getGatewayParameter());
+    model.addAttribute("custUI", Base64.getEncoder()
+            .encodeToString(custUiJson.getBytes(StandardCharsets.UTF_8)));
+    return "esign-redirect";   // auto-submitting form with XML + custUI
+}
+```
+
+`userAadhaarLast4Digit` is an enforcement control, not decoration: the gateway compares
+it against the Aadhaar the signer types and stops the signing if they differ. Validate
+`last4` yourself — anything that is not exactly four digits is silently blanked, which
+turns the check off rather than failing the request:
+
+```java
+if (last4 == null || !last4.matches("\\d{4}")) {
+    throw new IllegalArgumentException("last4 must be exactly 4 digits");
+}
+```
+
+The colour and logo fields are cosmetic and fall back to the default orange button,
+blue header and no logo. Full field list, validation rules and pitfalls are in
+[Customising the Aadhaar Page (custUI)](QUICK_START.md#customising-the-aadhaar-page-custui).
+
+---
+
+### Verifying the Returned Signature
+
+Independent of the framework, and independent of the PDF: the check needs
+only the hash that was sent and the gateway's response, so it works identically in a Spring Boot
+`@PostMapping`, a servlet `doPost`, or a console main. Nothing is written and no temp file is
+read, which makes it safe to run on the callback thread — except for the revocation lookup, which
+is a network call.
+
+```java
+// In the Phase 2 callback, alongside getSigedDocument(...)
+String esignRespXml = request.getParameter("eSignResponse");
+
+eSignServiceReturn signed = esignObj.getSigedDocument(esignRespXml, tempFile);
+ReturnDocument doc = signed.getReturnDocuments().get(0);
+
+eSignVerificationResult v = esignObj.verifyEsignResponseHash(
+        doc.getDocumentHash(),   // the hash that was sent for this document
+        esignRespXml,            // the raw response string, not re-serialised
+        true);                   // OCSP, then CRL
+
+if (!v.isValid()) {
+    log.warn("Signature did not verify for txn {}: {}", v.getTransactionId(), v.getErrorMessage());
+} else {
+    log.info("Verified: signer={} signedAt={} revocation={} via {}",
+            v.getSignerSubject(), v.getSigningTime(),
+            v.getRevocationStatus(), v.getRevocationMethod());
+}
+```
+
+Three things worth knowing before you wire this into a request thread:
+
+- **Revocation costs a round trip.** The eMudhra UAT OCSP responder takes roughly 20 seconds.
+  Either pass `false` and verify asynchronously, or shorten the timeouts with
+  `eSignVerifier.setHttpTimeouts(connectMs, readMs)` (defaults: 15 s / 45 s, static for the JVM).
+- **Pass the response string untouched.** `getResponseSignatureValid()` validates the gateway's
+  enveloped XML signature, so any re-serialisation or pretty-printing between receiving and
+  verifying will make that check fail. It is advisory and does not affect `isValid()`, but it is
+  the only field that can tell you the XML was tampered with in transit.
+- **In hash mode there is no `ReturnDocument`.** Pass the digest you computed yourself, and
+  either the response XML or the Base64 PKCS#7 from `ReturnDocument.getSignedData()`.
+
+For the complete field list, see
+[Verifying a Signature](QUICK_START.md#verifying-a-signature) in QUICK_START.md.
+
+---
+
+## Encrypted Aadhaar Flow — Spring Boot Example
+
+This example shows how to integrate the Encrypted Aadhaar flow into a Spring Boot application. In this flow the signer's Aadhaar number is encrypted by the SDK and sent pre-filled to the gateway — the user only needs to authenticate (OTP/Fingerprint/IRIS), not type their Aadhaar.
+
+> See [Encrypted Aadhaar Flow](QUICK_START.md#encrypted-aadhaar-flow) in QUICK_START.md for a full concept explanation.
+
+### application.properties additions
+
+```properties
+# Path to UIDAI public-key CER file, or supply as base64 in code
+esign.uidai-cer-path=/path/to/uidai-public.cer
+```
+
+### Controller
+
+```java
+import com.emudhra.esign.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.*;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpSession;
+import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.UUID;
+
+@Controller
+@RequestMapping("/esign/encrypted-aadhaar")
+public class EncryptedAadhaarSignController {
+
+    @Autowired
+    private eSign esignObj;
+
+    @Value("${esign.temp-folder}")
+    private String tempFolder;
+
+    @Value("${esign.emudhra-aadhaar-url}")
+    private String aadhaarGatewayUrl;
+
+    @Value("${esign.uidai-cer-path}")
+    private String uidaiCerPath;
+
+    /**
+     * Phase 1: build the encrypted Aadhaar request and redirect to eMudhra gateway.
+     *
+     * The caller must supply the signer's Aadhaar number (from a prior KYC step)
+     * and the base64-encoded PDF to sign.
+     */
+    @PostMapping("/initiate")
+    public String initiate(
+            @RequestParam("aadhaarNumber") String aadhaarNumber,
+            @RequestParam("pdfBase64") String pdfBase64,
+            HttpSession session,
+            org.springframework.ui.Model model) {
+
+        // Configure the encrypted Aadhaar details
+        EncryptedAadhaarConfig aadhaarConfig = new EncryptedAadhaarConfig();
+        aadhaarConfig.setAadhaarNumber(aadhaarNumber);
+        aadhaarConfig.setCerFilePath(uidaiCerPath);
+
+        // Build the signing input
+        eSignInput input = eSignInputBuilder.init()
+            .setDocBase64(pdfBase64)
+            .setDocInfo("Loan Agreement")
+            .setDocURL("https://yourapp.com/docs/agreement.pdf")
+            .setSignedBy("") // gateway fills in signer name from Aadhaar record
+            .setLocation("India")
+            .setReason("Agreement Signing")
+            .setAppearanceType(eSign.AppearanceType.StandardSignature)
+            .setPageTobeSigned(eSign.PageTobeSigned.Last)
+            .setCoordinates(eSign.Coordinates.BottomRight)
+            .setCoSign(true)
+            .setEncryptedAadhaarFlowEnabled(true)    // must be true to activate encrypted flow
+            .setEncryptedAadhaarConfig(aadhaarConfig)
+            .build();
+
+        ArrayList<eSignInput> inputs = new ArrayList<>();
+        inputs.add(input); // only 1 document per transaction in this flow
+
+        String transactionId = "TXN-" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+
+        eSignServiceReturn result = esignObj.getGatewayParameter(
+            inputs,
+            "",
+            transactionId,
+            "https://yourapp.com/esign/encrypted-aadhaar/callback",
+            "https://yourapp.com/esign/encrypted-aadhaar/redirect",
+            tempFolder,
+            eSign.eSignAPIVersion.V2,
+            eSign.AuthMode.OTP
+        );
+
+        if (result.getStatus() != 1) {
+            model.addAttribute("error", result.getErrorCode() + ": " + result.getErrorMessage());
+            return "esign-error";
+        }
+
+        // Store temp file path in session — needed when the callback arrives
+        session.setAttribute("encAadhaarTempFile", result.getPreSignedTempFile());
+        session.setAttribute("encAadhaarTxnId", result.getTransactionID());
+
+        // Redirect user to eMudhra gateway
+        model.addAttribute("gatewayUrl", aadhaarGatewayUrl);
+        model.addAttribute("gatewayParam", result.getGatewayParameter());
+        return "esign-redirect"; // renders a page with a POST form to the gateway
+    }
+
+    /**
+     * Phase 2: eMudhra POSTs the signed response here.
+     * Retrieve the signed PDF and process it.
+     */
+    @PostMapping("/callback")
+    @ResponseBody
+    public String callback(
+            @RequestParam("XML") String responseXml,
+            HttpSession session) {
+
+        String tempFilePath = (String) session.getAttribute("encAadhaarTempFile");
+        if (tempFilePath == null) {
+            return "Session expired or temp file not found.";
+        }
+
+        eSignServiceReturn signResult = esignObj.getSigedDocument(responseXml, tempFilePath);
+
+        if (signResult.getStatus() != 1) {
+            return "Signing failed: " + signResult.getErrorCode() + " - " + signResult.getErrorMessage();
+        }
+
+        ReturnDocument doc = signResult.getReturnDocuments().get(0);
+        if (doc.getStatus() != 1) {
+            return "Document error: " + doc.getErrorCode() + " - " + doc.getErrorMessage();
+        }
+
+        // doc.getSignedDocument() is Base64-encoded signed PDF
+        String signedPdfBase64 = doc.getSignedDocument();
+        // TODO: decode, save to DB or filesystem, notify user
+        session.removeAttribute("encAadhaarTempFile");
+        session.removeAttribute("encAadhaarTxnId");
+
+        return "Signing successful. Document ID: " + doc.getDocId();
+    }
+}
+```
+
+### Redirect view (Thymeleaf)
+
+The Encrypted Aadhaar flow uses field name **`XML`** (not `txnref` as in the standard Aadhaar/PAN flows).
+
+**Option A — Form POST (recommended)**
+
+`esign-redirect.html` — auto-submits a hidden form to the eMudhra gateway with field `XML`:
+
+```html
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head><title>Redirecting to eSign Gateway...</title></head>
+<body onload="document.getElementById('esignForm').submit()">
+    <p>Redirecting to eSign gateway for authentication...</p>
+    <form id="esignForm" name="esignForm" th:action="${gatewayUrl}" method="POST">
+        <input type="hidden" id="XML" name="XML" th:value="${gatewayParam}" />
+        <noscript><button type="submit">Click here if not redirected</button></noscript>
+    </form>
+</body>
+</html>
+```
+
+### Error handling for encrypted Aadhaar-specific codes
+
+```java
+if (result.getStatus() != 1) {
+    switch (result.getErrorCode()) {
+        case "ESS-130":
+            // Aadhaar number is not 12 digits or contains non-digit characters
+            model.addAttribute("error", "Invalid Aadhaar number format.");
+            break;
+        case "ESS-131":
+            // CER file path wrong, file unreadable, or not an RSA certificate
+            model.addAttribute("error", "UIDAI certificate configuration error. Contact support.");
+            break;
+        case "ESS-132":
+            // Runtime encryption failure — check server logs
+            model.addAttribute("error", "Aadhaar encryption failed. Please try again.");
+            break;
+        default:
+            model.addAttribute("error", result.getErrorCode() + ": " + result.getErrorMessage());
+    }
+    return "esign-error";
+}

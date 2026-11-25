@@ -42,8 +42,25 @@ public final class ReturnDocument {
         this.patchSignatureAppearance = patchSignatureAppearance;
     }
 
+    private eSign.Coordinates textContentPosition = eSign.Coordinates.TopLeft;
+
+    ReturnDocument withTextContentPosition(eSign.Coordinates position) {
+        if (position != null) this.textContentPosition = position;
+        return this;
+    }
+
+    public eSign.Coordinates getTextContentPosition() {
+        return textContentPosition;
+    }
+
+    /** Same flag as {@link #isPatchSignatureAppearance()} (alternate name). */
+    public boolean isShowAadhaarOnSignature() {
+        return patchSignatureAppearance;
+    }
+
     protected String getReturnDocumentObjBase64() throws UnsupportedEncodingException {
-        String returnDocument = Integer.toString(docId) + "|" + docInfo + "|" + docURL + "|" + documentHash + "|" + preSignedDocument + "|" + (patchSignatureAppearance ? "1" : "0");
+        String returnDocument = Integer.toString(docId) + "|" + docInfo + "|" + docURL + "|" + documentHash + "|" + preSignedDocument + "|" + (patchSignatureAppearance ? "1" : "0")
+                + "|" + textContentPosition.name();
         return org.emcastle.util.encoders.Base64.toBase64String(returnDocument.getBytes(StandardCharsets.UTF_8));
     }
 
@@ -57,6 +74,11 @@ public final class ReturnDocument {
             }
             if (returnDocumentValues.length >= 6) {
                 this.patchSignatureAppearance = "1".equals(returnDocumentValues[5]);
+            }
+            if (returnDocumentValues.length >= 7) {
+                try {
+                    this.textContentPosition = eSign.Coordinates.valueOf(returnDocumentValues[6]);
+                } catch (IllegalArgumentException ignored) { }
             }
             int documentId = 0;
             if (eSignUtility.tryParseInt(returnDocumentValues[0])) {

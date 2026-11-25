@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- NetBeans build script (selected by buildfile=nbbuild.xml in nbproject/project.properties).
+     NetBeans generates nbproject/build-impl.xml on first open.
+     build.xml is the standalone Ant build used from the command line and CI. -->
+<project name="eSignASPLibrary" default="default" basedir=".">
+    <description>Builds, tests, and runs the project eSignASPLibrary.</description>
+    <import file="nbproject/build-impl.xml"/>
+</project>

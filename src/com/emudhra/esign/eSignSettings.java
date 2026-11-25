@@ -24,6 +24,15 @@ public final class eSignSettings {
     private static String ProxyUserID;
     private static String ProxyUserPassword;
     private static String encryptionKey;
+    private static LogType logType = LogType.AllLog;
+
+    public static LogType getLogType() {
+        return logType;
+    }
+
+    public static void setLogType(LogType aLogType) {
+        eSignSettings.logType = (aLogType != null) ? aLogType : LogType.AllLog;
+    }
 
     public static String getEncryptionKey() {
         return encryptionKey;

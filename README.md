@@ -15,7 +15,11 @@ A Java SDK for PDF digital signing. Supports two modes:
 - **Hash-Based Signing** — Sign using pre-computed SHA-256 hashes without sending the full PDF
 - **Flexible Placement** — Named coordinates, page-level coordinates, or content-search-based positioning
 - **Co-Signing Support** — Add multiple signatures to the same document
-- **Signature Appearance Patching** — Automatically updates the visual appearance of signed signature fields with the signer's name and masked Aadhaar number extracted from the gateway-returned certificate
+- **Signature Appearance Patching** — After signing, overlays the signer's name and masked Aadhaar number (from the gateway-returned certificate) as a locked stamp on the signature box, without touching the signed field
+- **Customisable Aadhaar Appearance** — Define the signature block yourself with `AadhaarSignatureAppearance`: placeholder-based content (`{name}`, `{aadhaar}`, `{reason}`, `{location}`, `{date}`), Aadhaar on/off, per-field labels and ordering, date format and timezone, italic/bold, colour, size and margins
+- **Signer Certificate Details** — `eSignServiceReturn.getSignerCertificateInfo()` exposes the parsed gateway certificate: signer CN, Aadhaar number, issuer, serial, validity, algorithm, key size and SHA-256 thumbprint
+- **Signature Verification** — `verifyEsignResponseHash()` verifies the returned PKCS#7 against the hash that was sent, reports the signer certificate, and checks revocation over OCSP with a CRL fallback
+- **Encrypted Aadhaar Flow** — Send the signer's Aadhaar pre-filled, RSA-encrypted with the UIDAI public key
 - **Bank KYC** — Perform Bank KYC verification through eMudhra
 - **Configurable Logging** — File-based logging with rotation and multiple log levels
 - **Proxy Support** — HTTP proxy with optional authentication
@@ -154,7 +158,7 @@ ant compile
 ant clean
 ```
 
-Output JAR: `dist/eSignASPLibrary5_12.jar`
+Output JAR: `dist/eSignASPLibrary5_13.jar`
 
 ## Dependencies
 

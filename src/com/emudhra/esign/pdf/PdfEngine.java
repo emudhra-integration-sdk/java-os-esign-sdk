@@ -24,6 +24,7 @@ import org.apache.pdfbox.cos.COSInteger;
 import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDResources;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.ExternalSigningSupport;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature;
@@ -38,6 +39,9 @@ import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationWidget;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAppearanceDictionary;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAppearanceStream;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationRubberStamp;
+import com.emudhra.esign.eSign;
+import java.util.Date;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
@@ -292,56 +296,109 @@ public final class PdfEngine {
     }
 
     // -----------------------------------------------------------------------
-    // Phase 3: patchSignatureAppearance — incremental append
+    // Phase 3: post-sign signature details overlay — incremental append
     // -----------------------------------------------------------------------
 
-    public byte[] patchSignatureAppearance(byte[] signedPdf,
-                                           String signerName,
-                                           String aadhaarSuffix) throws IOException {
+    /** Builds the overlay lines from the values stored in the signature dictionary. */
+    public interface LineBuilder {
+        List<String> build(String reason, String location, Date signedOn);
+    }
+
+    /** Font / colour / margins / sizing for the overlay text. fontSize 0 = auto-fit, leading 0 = fontSize. */
+    public static final class OverlayStyle {
+        final String baseFontName;
+        final float[] rgb;
+        final float marginLeft, marginRight, marginTop, marginBottom, fontSize, leading;
+        final eSign.Coordinates position;
+
+        public OverlayStyle(String baseFontName, float[] rgb, float marginLeft, float marginRight,
+                            float marginTop, float marginBottom, float fontSize, float leading,
+                            eSign.Coordinates position) {
+            this.baseFontName = baseFontName;
+            this.rgb = rgb;
+            this.marginLeft = marginLeft;
+            this.marginRight = marginRight;
+            this.marginTop = marginTop;
+            this.marginBottom = marginBottom;
+            this.fontSize = fontSize;
+            this.leading = leading;
+            this.position = position != null ? position : eSign.Coordinates.TopLeft;
+        }
+    }
+
+    /**
+     * Draws the signer details over every box of the NEWEST signature, as a
+     * separate locked, print-only Stamp annotation.
+     *
+     * <p>The signed field itself is never touched: rewriting a signed widget's
+     * /AP is a disallowed change and Acrobat then reports the document as
+     * altered. Adding an annotation is a permitted change for an approval
+     * signature, so the signature stays valid. Earlier co-signers' boxes are
+     * left alone — each belongs to its own signer's certificate.
+     */
+    public byte[] addSignatureDetailsOverlay(byte[] signedPdf, LineBuilder lineBuilder,
+                                             OverlayStyle style) throws IOException {
         try (PDDocument doc = Loader.loadPDF(signedPdf)) {
-            PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm();
+            PDAcroForm acroForm = doc.getDocumentCatalog().getAcroForm(null);
             if (acroForm == null) return signedPdf;
 
-            List<PDField> fields = acroForm.getFields();
-            if (fields == null || fields.isEmpty()) return signedPdf;
+            // Newest signature = the one whose /ByteRange ends last (the latest revision).
+            List<PDSignatureField> sigFields = new ArrayList<>();
+            PDSignature newest = null;
+            long newestEnd = -1;
+            for (PDField f : acroForm.getFieldTree()) {
+                if (!(f instanceof PDSignatureField)) continue;
+                PDSignature s = ((PDSignatureField) f).getSignature();
+                if (s == null) continue;
+                sigFields.add((PDSignatureField) f);
+                int[] br = s.getByteRange();
+                long end = br != null && br.length == 4 ? (long) br[2] + br[3] : -1;
+                if (end > newestEnd) { newestEnd = end; newest = s; }
+            }
+            if (newest == null) return signedPdf;
 
-            for (PDField field : fields) {
-                if (!(field instanceof PDSignatureField)) continue;
-                PDSignatureField sigField = (PDSignatureField) field;
-                PDSignature sig = sigField.getSignature();
+            PDType1Font font = new PDType1Font(Standard14Fonts.getMappedFontName(style.baseFontName));
+            boolean added = false;
 
-                List<PDAnnotationWidget> widgets = sigField.getWidgets();
-                if (widgets == null || widgets.isEmpty()) continue;
+            for (PDSignatureField field : sigFields) {
+                PDSignature sig = field.getSignature();
+                if (!sig.getCOSObject().equals(newest.getCOSObject())) continue;
 
-                // Build appearance text (shared across all widgets of this field)
-                String reason = sig != null ? sig.getReason() : null;
-                Calendar signDate = sig != null ? sig.getSignDate() : null;
-                String dateStr = "";
-                if (signDate != null) {
-                    dateStr = new SimpleDateFormat("dd-MMM-yyyy HH:mm:ss").format(signDate.getTime());
-                }
+                Date signedOn = sig.getSignDate() != null ? sig.getSignDate().getTime() : new Date();
+                List<String> lines = lineBuilder.build(sig.getReason(), sig.getLocation(), signedOn);
+                if (lines == null || lines.isEmpty()) continue;
 
-                // Multi-page: rewrite the /AP /N of EVERY widget, not just the first.
-                // Pre-existing DocMDP (S3) post-sign-patch hazard preserved, not worsened
-                // (AP-only rewrite, no new structure added).
-                for (PDAnnotationWidget widget : widgets) {
+                List<PDAnnotationWidget> widgets = field.getWidgets();
+                for (int i = 0; i < widgets.size(); i++) {
+                    PDAnnotationWidget widget = widgets.get(i);
                     PDRectangle rect = widget.getRectangle();
-                    if (rect == null) continue;
+                    if (rect == null || rect.getWidth() <= 0 || rect.getHeight() <= 0) continue;
+                    PDPage page = pageOf(doc, widget);
+                    if (page == null) continue;
 
-                    float w = rect.getWidth();
-                    float h = rect.getHeight();
-                    if (w <= 0 || h <= 0) continue;
-
-                    // Create the new Form XObject appearance
-                    PDAppearanceStream ap = buildTextAppearance(doc, w, h,
-                            signerName, aadhaarSuffix, reason, dateStr);
-
+                    PDAnnotationRubberStamp stamp = new PDAnnotationRubberStamp();
+                    stamp.setRectangle(new PDRectangle(rect.getLowerLeftX(), rect.getLowerLeftY(),
+                            rect.getWidth(), rect.getHeight()));
+                    stamp.setAnnotationName("eSignDetails-" + field.getFullyQualifiedName() + "-" + i);
+                    stamp.setContents("Signature details: " + field.getFullyQualifiedName());
+                    stamp.setPrinted(true);
+                    stamp.setReadOnly(true);
+                    stamp.setLocked(true);
+                    stamp.setLockedContents(true);
+                    stamp.setPage(page);
                     PDAppearanceDictionary apDict = new PDAppearanceDictionary();
-                    apDict.setNormalAppearance(ap);
-                    widget.setAppearance(apDict);
-                    widget.getCOSObject().setNeedToBeUpdated(true);
+                    apDict.setNormalAppearance(buildOverlayStream(doc, font, lines,
+                            rect.getWidth(), rect.getHeight(), style));
+                    stamp.setAppearance(apDict);
+
+                    List<org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation> annots = page.getAnnotations();
+                    annots.add(stamp);
+                    page.setAnnotations(annots);
+                    page.getCOSObject().setNeedToBeUpdated(true);
+                    added = true;
                 }
             }
+            if (!added) return signedPdf;
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             doc.saveIncremental(baos);
@@ -349,45 +406,150 @@ public final class PdfEngine {
         }
     }
 
-    private PDAppearanceStream buildTextAppearance(PDDocument doc, float w, float h,
-            String signerName, String aadhaarSuffix, String reason, String dateStr) throws IOException {
+    private static PDPage pageOf(PDDocument doc, PDAnnotationWidget widget) throws IOException {
+        if (widget.getPage() != null) return widget.getPage();
+        for (PDPage p : doc.getPages()) {
+            for (org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation a : p.getAnnotations()) {
+                if (a.getCOSObject().equals(widget.getCOSObject())) return p;
+            }
+        }
+        return null;
+    }
+
+    private PDAppearanceStream buildOverlayStream(PDDocument doc, PDType1Font font, List<String> rawLines,
+                                                  float w, float h, OverlayStyle st) throws IOException {
+        List<String> lines = new ArrayList<>();
+        for (String l : rawLines) lines.add(encodable(font, l));
+        float availW = w - st.marginLeft - st.marginRight;
+        float availH = h - st.marginTop - st.marginBottom;
+
+        // Height-based maximum, then shrink so the widest line fits.
+        float fontSize = availH / lines.size();
+        for (String line : lines) {
+            float lw = textWidth(font, line, fontSize);
+            if (lw > availW && lw > 0) fontSize = Math.min(fontSize, fontSize * availW / lw);
+        }
+        fontSize = st.fontSize > 0 ? st.fontSize : Math.max(4f, Math.min(fontSize, 10f));
+        float leading = st.leading > 0 ? st.leading : fontSize;
+
+        float maxLW = 0f;
+        for (String line : lines) maxLW = Math.max(maxLW, textWidth(font, line, fontSize));
+        if (maxLW == 0f) maxLW = availW;
+        float[] origin = textOrigin(st.position, w, h, st.marginLeft, st.marginRight,
+                st.marginTop, st.marginBottom, fontSize, leading, lines.size(), maxLW);
+
         PDAppearanceStream ap = new PDAppearanceStream(doc);
-        ap.setResources(new org.apache.pdfbox.pdmodel.PDResources());
+        ap.setResources(new PDResources());
         ap.setBBox(new PDRectangle(w, h));
-
-        PDType1Font font = new PDType1Font(Standard14Fonts.FontName.TIMES_ITALIC);
-        float fontSize = 7f;
-        float leading = 9f;
-        float margin = 3f;
-
         try (PDPageContentStream cs = new PDPageContentStream(doc, ap)) {
-            // White background
+            // Opaque background hides the pre-sign text underneath.
             cs.setNonStrokingColor(1f, 1f, 1f);
             cs.addRect(0, 0, w, h);
             cs.fill();
-
-            cs.setNonStrokingColor(0f, 0f, 0f);
+            cs.setNonStrokingColor(st.rgb[0], st.rgb[1], st.rgb[2]);
             cs.beginText();
             cs.setFont(font, fontSize);
             cs.setLeading(leading);
-            cs.newLineAtOffset(margin, h - leading);
-
-            cs.showText("Digitally Signed by");
-            cs.newLine();
-            cs.showText("Name : " + nvl(signerName));
-            cs.newLine();
-            cs.showText("Aadhaar No : **** **** " + nvl(aadhaarSuffix));
-            if (reason != null && !reason.isEmpty()) {
+            cs.newLineAtOffset(origin[0], origin[1]);
+            for (String line : lines) {
+                cs.showText(line);
                 cs.newLine();
-                cs.showText("Reason: " + reason);
-            }
-            if (!dateStr.isEmpty()) {
-                cs.newLine();
-                cs.showText("Date : " + dateStr);
             }
             cs.endText();
         }
         return ap;
+    }
+
+    // -----------------------------------------------------------------------
+    // Text layout helpers (shared by StandardSignature and the overlay)
+    // -----------------------------------------------------------------------
+
+    /** Baseline origin {x, y} of the first line for a text block anchored at {@code pos}. */
+    private static float[] textOrigin(eSign.Coordinates pos, float w, float regionH,
+                                      float ml, float mr, float mt, float mb,
+                                      float fontSize, float leading, int n, float maxLineWidth) {
+        float y;
+        switch (pos != null ? pos : eSign.Coordinates.TopLeft) {
+            case BottomLeft: case BottomMiddle: case BottomRight:
+                y = mb + (n - 1) * leading;
+                break;
+            case CenterLeft: case CenterMiddle: case CenterRight:
+                y = (regionH + fontSize + (n - 1) * leading) / 2f - fontSize;
+                break;
+            default:
+                y = regionH - mt - fontSize;
+        }
+        float x;
+        switch (pos != null ? pos : eSign.Coordinates.TopLeft) {
+            case TopMiddle: case CenterMiddle: case BottomMiddle:
+                x = Math.max(ml, (w - maxLineWidth) / 2f);
+                break;
+            case TopRight: case CenterRight: case BottomRight:
+                x = Math.max(ml, w - mr - maxLineWidth);
+                break;
+            default:
+                x = ml;
+        }
+        return new float[]{x, y};
+    }
+
+    private static float textWidth(PDType1Font font, String s, float fontSize) {
+        try {
+            return font.getStringWidth(s) / 1000f * fontSize;
+        } catch (IOException | IllegalArgumentException e) {
+            return 0f;
+        }
+    }
+
+    /** Replaces characters the (WinAnsi) base-14 font cannot encode with '?'. */
+    private static String encodable(PDType1Font font, String s) {
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); ) {
+            int cp = s.codePointAt(i);
+            String ch = new String(Character.toChars(cp));
+            try {
+                font.encode(ch);
+                sb.append(ch);
+            } catch (IOException | IllegalArgumentException e) {
+                sb.append('?');
+            }
+            i += Character.charCount(cp);
+        }
+        return sb.toString();
+    }
+
+    /** Word-wraps each line to {@code maxWidth}; words longer than the width are split. */
+    private static List<String> wrapLines(PDType1Font font, List<String> lines, float fontSize, float maxWidth) {
+        List<String> out = new ArrayList<>();
+        for (String line : lines) {
+            if (textWidth(font, line, fontSize) <= maxWidth) {
+                out.add(line);
+                continue;
+            }
+            StringBuilder cur = new StringBuilder();
+            for (String word : line.split(" ")) {
+                if (word.isEmpty()) continue;
+                String candidate = cur.length() == 0 ? word : cur + " " + word;
+                if (textWidth(font, candidate, fontSize) <= maxWidth) {
+                    cur.setLength(0);
+                    cur.append(candidate);
+                    continue;
+                }
+                if (cur.length() > 0) {
+                    out.add(cur.toString());
+                    cur.setLength(0);
+                }
+                while (textWidth(font, word, fontSize) > maxWidth && word.length() > 1) {
+                    int cut = word.length() - 1;
+                    while (cut > 1 && textWidth(font, word.substring(0, cut), fontSize) > maxWidth) cut--;
+                    out.add(word.substring(0, cut));
+                    word = word.substring(cut);
+                }
+                cur.append(word);
+            }
+            if (cur.length() > 0) out.add(cur.toString());
+        }
+        return out;
     }
 
     // -----------------------------------------------------------------------
@@ -673,30 +835,34 @@ public final class PdfEngine {
         // --- Prepare text lines ---
         String text = (ap != null && ap.layer2Text != null && !ap.layer2Text.trim().isEmpty())
                 ? ap.layer2Text : "Digitally Signed.";
-        String[] lines = text.split("\n");
-
-        // Count non-empty lines to drive font-size calculation
-        int lineCount = 0;
-        for (String l : lines) if (!l.trim().isEmpty()) lineCount++;
-        lineCount = Math.max(1, lineCount);
+        PDType1Font font = new PDType1Font(Standard14Fonts.FontName.TIMES_ITALIC);
+        List<String> rawLines = new ArrayList<>();
+        for (String l : text.split("\n")) if (!l.trim().isEmpty()) rawLines.add(encodable(font, l.trim()));
 
         float margin  = 3f;
         float availH  = h - 2 * margin;
+        float availW  = w - 2 * margin;
 
-        // Start from the configured/default size and shrink until all lines fit
+        // Start from the configured/default size; wrap long lines, then shrink until all fit
         float fontSize = (ap != null && ap.fontSize > 0) ? (float) ap.fontSize : 9f;
         float leading  = fontSize * 1.5f;
-        while (lineCount * leading > availH && fontSize > 4.5f) {
+        List<String> lines = wrapLines(font, rawLines, fontSize, availW);
+        while (lines.size() * leading > availH && fontSize > 4.5f) {
             fontSize -= 0.5f;
             leading   = fontSize * 1.5f;
+            lines = wrapLines(font, rawLines, fontSize, availW);
         }
+        float maxLW = 0f;
+        for (String l : lines) maxLW = Math.max(maxLW, textWidth(font, l, fontSize));
+        float[] origin = textOrigin(ap != null ? ap.textPosition : null, w, h,
+                margin, margin, margin, margin, fontSize, leading, lines.size(), maxLW);
+        // showAadhaarOnSignature: the post-sign overlay carries the text; keep this box blank.
+        boolean drawText = ap == null || !ap.blankText;
 
         // --- Build the /AP /N appearance stream ---
         PDAppearanceStream apStream = new PDAppearanceStream(doc);
         apStream.setResources(new org.apache.pdfbox.pdmodel.PDResources());
         apStream.setBBox(new PDRectangle(w, h));
-
-        PDType1Font font = new PDType1Font(Standard14Fonts.FontName.TIMES_ITALIC);
 
         try (PDPageContentStream cs = new PDPageContentStream(doc, apStream)) {
             // White background
@@ -714,17 +880,17 @@ public final class PdfEngine {
                 cs.setNonStrokingColor(0f, 0f, 0f);
             }
 
-            cs.beginText();
-            cs.setFont(font, fontSize);
-            cs.setLeading(leading);
-            // First baseline just below the top edge
-            cs.newLineAtOffset(margin, h - margin - fontSize);
-            for (String line : lines) {
-                String l = line.trim();
-                cs.showText(l.isEmpty() ? " " : l);
-                cs.newLine();
+            if (drawText) {
+                cs.beginText();
+                cs.setFont(font, fontSize);
+                cs.setLeading(leading);
+                cs.newLineAtOffset(origin[0], origin[1]);
+                for (String line : lines) {
+                    cs.showText(line);
+                    cs.newLine();
+                }
+                cs.endText();
             }
-            cs.endText();
             drawBorder(cs, w, h, border);
         }
 

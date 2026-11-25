@@ -196,12 +196,29 @@ public final class eSignInput {
         return appearanceType;
     }
 
+    /** @deprecated No effect; see {@link eSignInputBuilder#setTickRequired(boolean)}. */
+    @Deprecated
     public boolean isTickRequired() {
         return TickRequired;
     }
 
     public boolean isPatchSignatureAppearance() {
         return patchSignatureAppearance;
+    }
+
+    /** Same flag as {@link #isPatchSignatureAppearance()} (alternate name). */
+    public boolean isShowAadhaarOnSignature() {
+        return patchSignatureAppearance;
+    }
+
+    private eSign.Coordinates textContentPosition = eSign.Coordinates.TopLeft;
+
+    public eSign.Coordinates getTextContentPosition() {
+        return textContentPosition;
+    }
+
+    void setTextContentPosition(eSign.Coordinates textContentPosition) {
+        this.textContentPosition = textContentPosition != null ? textContentPosition : eSign.Coordinates.TopLeft;
     }
 
     public EncryptedAadhaarConfig getEncryptedAadhaarConfig() {

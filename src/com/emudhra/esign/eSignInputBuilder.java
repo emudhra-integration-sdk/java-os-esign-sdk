@@ -40,6 +40,7 @@ public class eSignInputBuilder {
     private boolean tickRequired;
     private String pdfPassword;
     private boolean patchSignatureAppearance = false;
+    private eSign.Coordinates textContentPosition = eSign.Coordinates.TopLeft;
 
     private eSign.InputType inputType = eSign.InputType.PDF;
     private EncryptedAadhaarConfig encryptedAadhaarConfig;
@@ -174,6 +175,11 @@ public class eSignInputBuilder {
         return this;
     }
 
+    /**
+     * @deprecated No effect. Kept for backward compatibility.
+     *             The validity icon is drawn by the PDF viewer, not stored in the PDF.
+     */
+    @Deprecated
     public eSignInputBuilder setTickRequired(boolean tickRequired) {
         this.tickRequired = tickRequired;
         return this;
@@ -186,6 +192,22 @@ public class eSignInputBuilder {
 
     public eSignInputBuilder setPatchSignatureAppearance(boolean patchSignatureAppearance) {
         this.patchSignatureAppearance = patchSignatureAppearance;
+        return this;
+    }
+
+    /**
+     * true = after signing, overlay the signer's name and masked Aadhaar from the
+     * certificate on the signature box, and leave the pre-sign box blank.
+     * Same flag as {@link #setPatchSignatureAppearance(boolean)}.
+     */
+    public eSignInputBuilder setShowAadhaarOnSignature(boolean showAadhaarOnSignature) {
+        this.patchSignatureAppearance = showAadhaarOnSignature;
+        return this;
+    }
+
+    /** Where the text block sits inside the signature box (StandardSignature and the post-sign overlay). Default TopLeft. */
+    public eSignInputBuilder setTextContentPosition(eSign.Coordinates textContentPosition) {
+        this.textContentPosition = textContentPosition;
         return this;
     }
 
@@ -217,6 +239,7 @@ public class eSignInputBuilder {
         eSignInput input = new eSignInput(this.docBase64, this.docInfo, this.docURL, this.location, this.reason, this.signedBy, this.coSign, this.pageTobeSigned, this.coordinates, this.pageNumbers, this.pageLevelCoordinates, this.appearanceText, this.docHash, this.inputType, this.rightOrigin, this.contentSearch, this.signatureFontSize, this.signatureImage, this.appearanceType, this.oneLiner, this.advanceSignature, this.coloredGraphicInputs, this.customStyle, this.borderRequired, this.tickRequired, this.pdfPassword, this.patchSignatureAppearance);
         input.setEncryptedAadhaarConfig(this.encryptedAadhaarConfig);
         input.setEncryptedAadhaarFlowEnabled(this.encryptedAadhaarFlowEnabled);
+        input.setTextContentPosition(this.textContentPosition);
         return input;
     }
 }

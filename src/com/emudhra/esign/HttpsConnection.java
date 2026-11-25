@@ -78,7 +78,7 @@ public final class HttpsConnection {
                     connection = (HttpsURLConnection) url.openConnection();
                 }
             } catch (IOException ee) {
-                logger.warning("Exception in HttpsConnection.excutePostHttpsXml for session/read timeout :" + sessionTimeout + " mili second");
+                logger.warning("Exception in HttpsConnection.excutePostHttpsXml (timeout=" + sessionTimeout + "ms): " + ee);
                 throw ee;
             }
             if (sessionTimeout > 0) {
@@ -110,7 +110,7 @@ public final class HttpsConnection {
             logger.info("HttpsConnection.excutePostHttpsXml END");
             return response.toString();
         } catch (Exception e) {
-            logger.warning("Exception in HttpsConnection.excutePostHttpsXml for session/read timeout :" + sessionTimeout + " mili second.");
+            logger.warning("Exception in HttpsConnection.excutePostHttpsXml (timeout=" + sessionTimeout + "ms): " + e);
             throw e;
         } finally {
             if (connection != null) {

@@ -11,15 +11,23 @@ A Java SDK for PDF digital signing. Supports signing via **eMudhra's eSign gatew
   - [Aadhaar Signing (V2 API)](#aadhaar-signing-v2-api)
   - [Encrypted Aadhaar Flow](#encrypted-aadhaar-flow)
   - [PAN Signing (V3 API)](#pan-signing-v3-api)
+  - [Encrypted Aadhaar Flow](#encrypted-aadhaar-flow)
   - [Vendor-Agnostic Signing](#vendor-agnostic-signing)
+- [Customising the Aadhaar Page (custUI)](#customising-the-aadhaar-page-custui)
 - [Signature Appearance Types](#signature-appearance-types)
 - [Page Selection and Coordinates](#page-selection-and-coordinates)
 - [Multi-Document Signing](#multi-document-signing)
 - [Hash-Based Signing](#hash-based-signing)
+- [Aadhaar Appearance Patching](#aadhaar-appearance-patching)
+- [Customising the Aadhaar Appearance](#customising-the-aadhaar-appearance)
+- [Signer Certificate Details](#signer-certificate-details)
+- [Verifying a Signature](#verifying-a-signature)
+- [Signature Content Position](#signature-content-position)
 - [API Reference](#api-reference)
   - [Constructors](#constructors)
   - [Methods](#methods)
   - [eSignInputBuilder](#esigninputbuilder)
+  - [EncryptedAadhaarConfig](#encryptedaadhaarconfig)
   - [eSignServiceReturn](#esignservicereturn)
   - [ReturnDocument](#returndocument)
   - [Enums](#enums)
@@ -64,7 +72,7 @@ Use `prepareDocuments()` and `appendSignatures()` to decouple PDF processing fro
 ## Prerequisites
 
 - **Java 11** or higher
-- **eSignASPLibrary5_12.jar** (the SDK JAR from `dist/`)
+- **eSignASPLibrary5_13.jar** (the SDK JAR from `dist/`)
 - **All dependency JARs** from the `lib/` folder:
   - batik-all-1.17.jar
   - commons-io-2.14.0.jar
@@ -399,6 +407,104 @@ if (statusResult.getStatus() == 1) {
     }
 }
 ```
+
+---
+
+## Customising the Aadhaar Page (custUI)
+
+`custUI` controls the eMudhra Aadhaar authentication page — the page the signer lands
+on after you post the `gatewayParameter`. It brands the page, and it can also restrict
+*which* Aadhaar is allowed to complete the signing. You send a small JSON object,
+Base64 encoded, alongside the `XML` field.
+
+> **This is a gateway parameter, not an SDK feature.** The SDK neither builds nor
+> validates it, and there is no builder method for it. You add it yourself to the same
+> form post that carries `XML`. It applies to the Aadhaar (V2) page.
+
+### The JSON
+
+```json
+{
+  "userAadhaarLast4Digit": "1234",
+  "buttonColour": "#f76618",
+  "headerColour": "#0171c9",
+  "logoURL": "https://cdn.example.com/brand/logo.png"
+}
+```
+
+| Key | Purpose | Accepted | Default when rejected |
+|---|---|---|---|
+| `userAadhaarLast4Digit` | Binds the session to one Aadhaar: the gateway checks the number the signer enters against these digits and **stops the signing on mismatch** | Exactly 4 characters, all digits | blank — no check is applied |
+| `buttonColour` | Primary button colour | 3- or 6-digit hex, e.g. `#f76618`, `f76618`, `#f00` | `#f76618` |
+| `headerColour` | Page header colour | same as above | `#0171c9` |
+| `logoURL` | Your logo, fetched by the signer's browser | Must begin `http://` or `https://` | logo not shown |
+
+Every field is optional. Send only the ones you want to change. The three colour and
+logo fields are cosmetic; `userAadhaarLast4Digit` is not — see below.
+
+### Binding the session to one Aadhaar
+
+`userAadhaarLast4Digit` is the only field that changes *behaviour* rather than appearance.
+Send four valid digits and the gateway compares them against the Aadhaar the signer types
+on the page; if the two do not match, **the signing is stopped**. Use it whenever you
+already know which Aadhaar holder is meant to sign — it stops a link intended for one
+signer being completed by somebody else.
+
+Omit the field and the page accepts any Aadhaar, exactly as before.
+
+> **A malformed value turns the check off, silently.** The digits are validated before
+> use, and anything that is not exactly four digits is replaced with a blank — which
+> means no comparison is performed, signing proceeds unrestricted, and nothing is
+> reported. If you depend on this as a control, assert that your value is four digits
+> in your own code before you encode it; do not assume the gateway will tell you.
+
+### Sending it
+
+Base64-encode the JSON, then add it as a second parameter next to `XML`.
+
+```java
+String custUiJson = "{"
+        + "\"userAadhaarLast4Digit\":\"1234\","
+        + "\"buttonColour\":\"#f76618\","
+        + "\"headerColour\":\"#0171c9\","
+        + "\"logoURL\":\"https://cdn.example.com/brand/logo.png\""
+        + "}";
+
+String custUI = Base64.getEncoder()
+        .encodeToString(custUiJson.getBytes(StandardCharsets.UTF_8));
+```
+
+Send it in the same form POST (never in a URL):
+
+```html
+<form id="esignForm" action="https://authenticate.sandbox.emudhra.com/AadhaareSign.jsp"
+      method="POST">
+    <input type="hidden" name="XML"    value="${gatewayParam}" />
+    <input type="hidden" name="custUI" value="${custUI}" />
+</form>
+```
+
+### Things that will catch you out
+
+- **Send the `#` on 3-digit hex.** A `#` is added automatically only when the value is
+  *exactly six characters*, so `f76618` becomes `#f76618` — but `f00` is left as-is,
+  fails validation, and silently reverts to the default. `#f00` works. Sending the `#`
+  every time is the safe habit.
+- **The colour keys are British spelling** — `buttonColour` and `headerColour`, while
+  `logoURL` and `userAadhaarLast4Digit` are not. A misspelled key is simply ignored.
+- **Bad input never fails loudly.** An invalid colour, a malformed logo URL, or JSON
+  that will not parse at all are absorbed: the page falls back to the orange button,
+  blue header and no logo, and signing proceeds. If your branding "did not apply",
+  there is no error to find — check the encoding and the key spelling first. The same
+  leniency is what makes a malformed `userAadhaarLast4Digit` dangerous: it does not
+  reject the request, it just stops enforcing the Aadhaar match.
+- **`logoURL` is only checked for its scheme.** Anything starting `http://` or
+  `https://` is accepted, so a typo or an unreachable host still passes validation and
+  renders as a broken image. The signer's browser fetches it directly, so it must be
+  publicly reachable and served over HTTPS to avoid mixed-content warnings.
+- **`userAadhaarLast4Digit` must be exactly four digits.** Five characters, a space, or
+  a masked form like `**1234` is dropped — and dropping it disables the Aadhaar match,
+  so the restriction you thought you had applied is simply not there.
 
 ---
 
@@ -769,6 +875,621 @@ eSignInput input = new eSignInput("Document Info", "a1b2c3d4e5f6...", "https://e
 
 ---
 
+## Aadhaar Appearance Patching
+
+After the gateway returns the PKCS7 signature, the SDK can optionally show the signer's real name and masked Aadhaar number on the signature box — both extracted automatically from the `UserX509Certificate` in the gateway response.
+
+**How it is drawn.** The signed signature widget is never modified — rewriting it would make Acrobat report the document as altered. Instead the SDK appends an incremental update that adds a **locked Stamp annotation** over each box of the newest signature. Earlier signers' boxes in a co-signed document are left untouched. The PDF viewer's signature panel may list this stamp as a permitted change made after signing. That is expected and does not invalidate the signature.
+
+### Enabling the feature
+
+Set `setShowAadhaarOnSignature(true)` on the builder before Phase 1 (`setPatchSignatureAppearance(true)` is an alias). For `StandardSignature`, this also leaves the signed box blank in Phase 1, so the stamp is the only text the reader sees. Viewers paint form widgets above annotations, so text left in the box would show through.
+
+```java
+eSignInput input = eSignInputBuilder.init()
+    .setDocBase64(pdfBase64)
+    .setDocInfo("Agreement")
+    .setSignedBy("John Doe")
+    .setAppearanceType(eSign.AppearanceType.StandardSignature)
+    .setPageTobeSigned(eSign.PageTobeSigned.Last)
+    .setCoordinates(eSign.Coordinates.BottomRight)
+    .setShowAadhaarOnSignature(true)   // <-- opt in
+    .build();
+```
+
+No changes are needed in Phase 2 (`getSigedDocument`). The flag is stored in the pre-sign temp file and applied automatically when the signature is finalized.
+
+### What the patched appearance shows
+
+```
+Digitally Signed by
+Name : Ramesh Kumar
+Aadhaar No : **** **** 6789
+Reason: Agreement Signing          (if Reason was set)
+Date : 18-May-2026 14:35:22
+```
+
+### Auto-fit font sizing
+
+The font size is computed dynamically so all lines fit within the signature box:
+
+- **Height constraint** — `fontSize = boxHeight / numberOfLines`
+- **Width constraint** — each line is measured with the metrics of the face actually being drawn; the font is scaled down if any line would exceed the box width
+- **Clamped** to a minimum of 4 pt and maximum of 10 pt for readability
+
+The stamp has an opaque white background. Lines are not wrapped; a long line shrinks the font instead (down to the 4 pt floor). Set `setFontSize(...)` on a custom appearance to fix the size and bypass auto-fit entirely — the value is used as-is, so an oversized value can overflow the box.
+
+### Default behaviour (when not set / set to false)
+
+The signature appearance configured during Phase 1 (signed-by name, reason, location, date) is preserved unchanged. No certificate extraction or overlay occurs.
+
+---
+
+## Customising the Aadhaar Appearance
+
+The block above is the default. To control its content and
+layout, pass an `AadhaarSignatureAppearance` to the three-argument
+`getSigedDocument` overload:
+
+```java
+AadhaarSignatureAppearance ap = new AadhaarSignatureAppearance();
+ap.setContentLines(Arrays.asList(
+        "E-Signed By: {name}",
+        "Date: {date}",
+        "Reason: {reason}",
+        "Location: {location}"));
+ap.setDateFormat("dd/MM/yyyy HH:mm:ss z");
+ap.setTimeZone("IST");
+ap.setItalic(true);
+
+eSignServiceReturn result = esignObj.getSigedDocument(responseXML, preSignedTempFile, ap);
+```
+
+Passing an appearance is enough to trigger the overlay on its own. Still set `setShowAadhaarOnSignature(true)` in Phase 1 for `StandardSignature`: without it the signed box keeps its Phase 1 text, and viewers paint that text above the stamp. Passing `null`, or calling the two-argument overload, keeps the default behaviour.
+
+### Two ways to define content
+
+**Template mode** — `setContentLines(...)`. The lines you supply *are* the appearance. `headerText`, every `*Label`, `lineOrder`, and all `show*` flags except `showAadhaar` are ignored.
+
+**Structured mode** — used when `contentLines` is unset. The block is assembled from `headerText`, the `show*` toggles, the `*Label` values, and `lineOrder`.
+
+### Placeholders (template mode)
+
+| Placeholder | Resolves to |
+|---|---|
+| `{name}` | the certificate CN — or `signerName` when one is supplied |
+| `{certName}` | the certificate CN always, even when `signerName` is set |
+| `{aadhaar}` | masked number, e.g. `**** **** 1234`; empty when `showAadhaar` is `false` |
+| `{aadhaarDigits}` | the four digits alone; same toggle |
+| `{reason}` | PDF `/Reason` |
+| `{location}` | PDF `/Location` |
+| `{date}` | signing time, formatted per `dateFormat` and `timeZone` |
+
+**Empty-line suppression:** a line whose placeholders *all* resolve to empty is dropped, so optional values never leave a dangling label behind. A line with at least one filled placeholder is kept, and a line containing no placeholders is always kept.
+
+### Settings
+
+| Setter | Default | Effect |
+|---|---|---|
+| `setContentLines(List<String>)` | null | Template lines; when set, overrides labels, header, order and `show*` |
+| `setSignerName(String)` | null | Overrides `{name}`; unset means the certificate CN is used |
+| `setShowAadhaar(boolean)` | `true` | Enables/disables the Aadhaar number in both modes |
+| `setHeaderText(String)` | `"Digitally Signed by"` | First line; `null` or `""` omits it |
+| `setShowName` / `setShowReason` / `setShowLocation` / `setShowDate` | `true` / `true` / `false` / `true` | Structured-mode toggles |
+| `setNameLabel` / `setAadhaarLabel` / `setReasonLabel` / `setLocationLabel` / `setDateLabel` | `"Name : "`, `"Aadhaar No : "`, `"Reason : "`, `"Location : "`, `"Date : "` | Structured-mode labels |
+| `setLineOrder(List<Field>)` | `HEADER, NAME, AADHAAR, REASON, LOCATION, DATE` | Structured-mode order; omitted fields are not drawn |
+| `setAdditionalLines(List<String>)` | null | Literal lines appended in both modes |
+| `setDateFormat(String)` | `"dd-MMM-yyyy HH:mm:ss"` | `SimpleDateFormat` pattern |
+| `setTimeZone(String)` | `"IST"` | Zone for `{date}` |
+| `setItalic(boolean)` / `setBold(boolean)` | `false` | Selects among the base-14 Helvetica faces; nothing is embedded |
+| `setFontSize(float)` | `0` | `0` auto-fits; any other value is used as-is |
+| `setLeading(float)` | `0` | `0` uses the font size |
+| `setFontColorHex(String)` | null | `"RRGGBB"` or `"#RRGGBB"`; invalid values fall back to black |
+| `setContentPosition(eSign.Coordinates)` | `TopLeft` | Anchor within the signature rectangle |
+| `setMarginLeft` / `Right` / `Top` / `Bottom` | `4`, `4`, `3`, `3` | Padding inside the rectangle, in points |
+
+The name is always resolved as `signerName` → certificate CN. There is no setter for the Aadhaar name or number: both come from the gateway certificate (CN, and the Title OID `2.5.4.12`).
+
+### Scenarios and expected output
+
+All examples assume a certificate with `CN=Ravi Kumar` and Aadhaar `1234`, a PDF whose `/Reason` is `Digital Signature` and `/Location` is `India`, signed at `04-Aug-2026 14:10:26 IST`.
+
+**1. No appearance passed — unchanged default**
+
+```java
+esignObj.getSigedDocument(responseXML, tempFile);
+```
+```
+Digitally Signed by
+Name : Ravi Kumar
+Aadhaar No : **** **** 1234
+Reason: Digital Signature
+Date : 04-Aug-2026 14:10:26
+```
+
+**2. Default appearance object**
+
+```java
+new AadhaarSignatureAppearance()
+```
+```
+Digitally Signed by
+Name : Ravi Kumar
+Aadhaar No : **** **** 1234
+Reason : Digital Signature
+Date : 04-Aug-2026 14:10:26
+```
+Two deliberate differences from scenario 1: the reason label is `"Reason : "` for consistency with the others, and the date renders in IST rather than the JVM default zone.
+
+**3. Template with the name from the certificate**
+
+```java
+ap.setContentLines(Arrays.asList(
+        "E-Signed By: {name}", "Date: {date}", "Reason: {reason}", "Location: {location}"));
+ap.setDateFormat("dd/MM/yyyy HH:mm:ss z");
+ap.setItalic(true);
+```
+```
+E-Signed By: Ravi Kumar
+Date: 04/08/2026 14:10:26 IST
+Reason: Digital Signature
+Location: India
+```
+
+**4. Aadhaar number enabled in a template**
+
+```java
+ap.setContentLines(Arrays.asList("E-Signed By: {name}", "Aadhaar No: {aadhaar}"));
+```
+```
+E-Signed By: Ravi Kumar
+Aadhaar No: **** **** 1234
+```
+
+**5. Aadhaar number disabled — the whole line disappears**
+
+```java
+ap.setContentLines(Arrays.asList("E-Signed By: {name}", "Aadhaar No: {aadhaar}"));
+ap.setShowAadhaar(false);
+```
+```
+E-Signed By: Ravi Kumar
+```
+
+**6. Digits-only placeholder**
+
+```java
+ap.setContentLines(Arrays.asList("XXXX-XXXX-{aadhaarDigits}"));
+```
+```
+XXXX-XXXX-1234
+```
+
+**7. Optional value absent — line dropped, no dangling label**
+
+Same template as scenario 3, but the PDF carries no `/Reason`:
+```
+E-Signed By: Ravi Kumar
+Date: 04/08/2026 14:10:26 IST
+Location: India
+```
+
+**8. ASP-supplied signer name overrides the certificate**
+
+```java
+ap.setSignerName("Ravi Kumar Sharma");
+ap.setContentLines(Arrays.asList("Signer: {name}", "Cert: {certName}"));
+```
+```
+Signer: Ravi Kumar Sharma
+Cert: Ravi Kumar
+```
+
+**9. Literal line with no placeholders — always kept**
+
+```java
+ap.setContentLines(Arrays.asList("DCMS Organization eSign", "Reason: {reason}"));
+```
+With no `/Reason` present:
+```
+DCMS Organization eSign
+```
+
+**10. Partially filled line — kept**
+
+```java
+ap.setContentLines(Arrays.asList("{name} / {reason}"));
+```
+With no `/Reason` present:
+```
+Ravi Kumar / 
+```
+
+**11. Structured mode — custom header and labels**
+
+```java
+ap.setHeaderText("eSigned by");
+ap.setNameLabel("Signed By : ");
+ap.setShowAadhaar(false);
+ap.setShowDate(false);
+ap.setShowReason(false);
+```
+```
+eSigned by
+Signed By : Ravi Kumar
+```
+
+**12. Structured mode — reordered, with Location on**
+
+```java
+ap.setShowLocation(true);
+ap.setLineOrder(Arrays.asList(Field.NAME, Field.DATE, Field.REASON, Field.LOCATION));
+```
+```
+Name : Ravi Kumar
+Date : 04-Aug-2026 14:10:26
+Reason : Digital Signature
+Location : India
+```
+`AADHAAR` is absent from the list, so no Aadhaar line is drawn — omitting a field from `lineOrder` replaces its `show*` flag.
+
+**13. Header suppressed**
+
+```java
+ap.setHeaderText(null);   // or ""
+```
+```
+Name : Ravi Kumar
+Aadhaar No : **** **** 1234
+Reason : Digital Signature
+Date : 04-Aug-2026 14:10:26
+```
+
+**14. Additional literal lines, appended in either mode**
+
+```java
+ap.setAdditionalLines(Arrays.asList("DCMS Organization eSign", "", null));
+```
+Appended after the block; blank and null entries are skipped.
+
+**15. Explicit font size, colour and position**
+
+```java
+ap.setFontSize(7f);
+ap.setLeading(9f);
+ap.setFontColorHex("#0000FF");
+ap.setContentPosition(eSign.Coordinates.BottomLeft);
+```
+Same text as the chosen mode, drawn at 7 pt with 9 pt line spacing in blue, anchored bottom-left. Auto-fit is skipped because `fontSize` is non-zero — an oversized value can overflow the rectangle.
+
+**16. Absent Aadhaar in the certificate**
+
+If the certificate carries no Title OID, `{aadhaar}` and `{aadhaarDigits}` resolve empty and the Aadhaar line is dropped in both modes — no `null` or `XXXX` is ever printed.
+
+### Limitations
+
+- **Latin-1 only.** The block is drawn with a non-embedded base-14 Helvetica face in WinAnsi encoding. Characters it cannot encode (for example a name in a regional script) are drawn as `?`. An embedded Unicode font is not yet supported.
+- **`z` in `dateFormat`** emits the zone abbreviation and is locale-sensitive. For a guaranteed literal, drop `z` and append the text through `additionalLines` or a label.
+- The signature **rectangle size** comes from Phase 1 (`pageLevelCoordinates` / `coordinates`). `contentPosition` only anchors the text inside whatever rectangle exists.
+- The stamp covers the whole box with a white background, including any border drawn in Phase 1.
+- Only the newest signature gets a stamp. In a co-signed document each signer's stamp is added in that signer's own Phase 2.
+
+---
+
+## Signer Certificate Details
+
+After Phase 2, the parsed signer certificate is available on the service return. It is populated whenever the gateway response carried a `UserX509Certificate`, regardless of whether an appearance was passed.
+
+```java
+eSignServiceReturn result = esignObj.getSigedDocument(responseXML, tempFile);
+
+SignerCertificateInfo cert = result.getSignerCertificateInfo();
+if (cert != null) {
+    System.out.println(cert.getSubjectCommonName());   // Aadhaar name held in the certificate
+    System.out.println(cert.getAadhaarNumber());       // Title OID 2.5.4.12
+    System.out.println(cert.getIssuerCommonName());
+    System.out.println(cert.getNotAfter());
+}
+```
+
+| Getter | Return Type | Description |
+|--------|-------------|-------------|
+| `getSubjectCommonName()` | String | Signer CN — the Aadhaar name in the certificate |
+| `getAadhaarNumber()` | String | Aadhaar digits from the Title OID `2.5.4.12`; null when absent |
+| `getSubjectDN()` | String | Full subject distinguished name |
+| `getIssuerCommonName()` | String | Issuing CA common name |
+| `getIssuerDN()` | String | Full issuer distinguished name |
+| `getSerialNumber()` | String | Certificate serial number, uppercase hex |
+| `getNotBefore()` | Date | Validity start |
+| `getNotAfter()` | Date | Validity end |
+| `getSignatureAlgorithm()` | String | e.g. `SHA256withRSA` |
+| `getPublicKeyAlgorithm()` | String | e.g. `RSA`, `EC` |
+| `getKeySize()` | int | Key size in bits; `0` when neither RSA nor EC |
+| `getSha256Thumbprint()` | String | SHA-256 fingerprint of the DER certificate, uppercase hex |
+| `getCertificateBase64()` | String | The certificate as returned by the gateway |
+
+Returns `null` when the response carried no certificate or it could not be parsed — a certificate parse failure never fails an otherwise successful signing, so always null-check before use.
+
+---
+
+## Verifying a Signature
+
+`verifyEsignResponseHash()` checks the PKCS#7 the gateway returned
+against the hash you sent, inspects the signer certificate, and optionally asks the CA
+whether that certificate has been revoked. It is a read-only check — it does not touch
+the PDF and needs no temp file, so it works for hash-mode signing over JSON or any other
+payload just as well as for PDF signing.
+
+```java
+eSignVerificationResult v = esignObj.verifyEsignResponseHash(
+        sha256Hex,      // the hash that was sent for signing
+        esignRespXml,   // the gateway's EsignResp XML, or a bare Base64 PKCS#7
+        true);          // check revocation (OCSP, then CRL)
+
+if (v.isValid()) {
+    System.out.println("Signed by  " + v.getSignerSubject());
+    System.out.println("At         " + v.getSigningTime());
+    System.out.println("Revocation " + v.getRevocationStatus());
+} else {
+    System.out.println("Not valid: " + v.getErrorMessage());
+}
+```
+
+### Parameters
+
+| Parameter | Description |
+|---|---|
+| `sha256Hex` | The SHA-256 hex that was sent for signing. In hash mode this is your own digest; for a PDF signing it is `ReturnDocument.getDocumentHash()`. |
+| `esignRespXml` | The gateway's `EsignResp` XML — the same string you pass to `getSigedDocument()`. A bare Base64 or PEM PKCS#7 is also accepted (anything not starting with `<` is treated as PKCS#7), so `ReturnDocument.getSignedData()` or a single `DocSignature` value works too. |
+| `checkRevocation` | `true` queries OCSP and falls back to CRL. This adds a network round trip — the eMudhra UAT responder takes roughly 20 seconds. `false` skips it and leaves the status `NOT_CHECKED`. |
+
+The method **never throws**. Every failure — malformed XML, a non-success `status`, an empty
+`DocSignature`, a network problem — comes back as `isValid() == false` with the reason in
+`getErrorMessage()`.
+
+### What `isValid()` means
+
+```
+signatureValid && hashMatched && certificateTimeValid
+    && revocationStatus != REVOKED && errorMessage == null
+```
+
+A revocation status of `NOT_CHECKED` or `UNKNOWN` does **not** make the result invalid. If your
+policy demands a positive revocation answer, test `getRevocationStatus() == GOOD` yourself.
+
+> **Certificate validity is checked at signing time, not now.** eSign OTP certificates are
+> issued for roughly 30 minutes, so by the time anyone verifies, the certificate has almost
+> always expired. The SDK therefore evaluates the validity window against the CMS signing time
+> when the PKCS#7 carries one, and against the current time otherwise.
+> `getValidityCheckedAt()` tells you which instant was used.
+
+### Result fields
+
+**Signature**
+
+| Getter | Type | Description |
+|---|---|---|
+| `isValid()` | boolean | The single success flag — see above |
+| `isSignatureValid()` | boolean | The CMS signature verifies against the signer's public key |
+| `isHashMatched()` | boolean | The signed `messageDigest` equals `sha256Hex` |
+| `getExpectedDigestHex()` | String | The hash you passed in |
+| `getMessageDigestHex()` | String | The digest actually signed |
+| `getDigestAlgorithm()` | String | e.g. `SHA-256` |
+| `getSigningTime()` | Date | CMS signing-time attribute; null when absent |
+| `getErrorMessage()` | String | Why the result is not valid; null on success |
+
+**Signer certificate**
+
+| Getter | Type | Description |
+|---|---|---|
+| `getSignerCertificate()` | X509Certificate | The certificate inside the PKCS#7 |
+| `getIssuerCertificate()` | X509Certificate | Issuer, from the PKCS#7 or downloaded via the AIA extension |
+| `getSignerSubject()` / `getIssuerSubject()` | String | Distinguished names |
+| `getSerialNumberHex()` | String | Serial number, hex |
+| `getCertNotBefore()` / `getCertNotAfter()` | Date | Validity window |
+| `isCertificateTimeValid()` | boolean | Whether the certificate was inside that window at `getValidityCheckedAt()` |
+| `getValidityCheckedAt()` | Date | The instant used — signing time when present, otherwise now |
+
+**Revocation**
+
+| Getter | Type | Description |
+|---|---|---|
+| `getRevocationStatus()` | enum | `GOOD`, `REVOKED`, `UNKNOWN`, `NOT_CHECKED` |
+| `getRevocationMethod()` | String | `"OCSP"` or `"CRL"`; null when not checked |
+| `getRevocationSource()` | String | The responder or CRL URL that answered |
+| `getRevocationCheckedAt()` | Date | When the check ran |
+| `getRevocationTime()` | Date | When the certificate was revoked, if it was |
+| `getRevocationMessage()` | String | Note explaining an `UNKNOWN` result |
+
+**Gateway response** (populated only when the input was `EsignResp` XML)
+
+| Getter | Type | Description |
+|---|---|---|
+| `getTransactionId()` | String | `EsignResp/@txn` |
+| `getResponseTimestamp()` | String | `EsignResp/@ts` |
+| `getResponseStatus()` | String | `EsignResp/@status` — `"1"` is success |
+| `getDocId()` | String | Which `DocSignature` was verified |
+| `getResponseSignatureValid()` | Boolean | Whether the gateway's enveloped XML signature verifies; `null` when absent or not evaluable |
+| `getResponseSignatureNote()` | String | Explains the above |
+| `getUserCertificateMatches()` | Boolean | Whether `UserX509Certificate` equals the PKCS#7 signer certificate; `null` when not compared |
+
+`getResponseSignatureValid()` is **advisory** and deliberately not part of `isValid()`. It proves
+the XML is byte-for-byte what the gateway signed — which fails if you re-serialise or
+pretty-print the response before passing it in. Keep the raw string if you want this check to
+mean anything. A `UserX509Certificate` that disagrees with the PKCS#7 signer, by contrast, *does*
+set an error and fails the result.
+
+### Complete example
+
+A standalone verifier — no signing, no PDF, no SDK instance state beyond the constructor.
+Useful as an audit tool over signatures you stored earlier.
+
+```java
+import com.emudhra.esign.eSign;
+import com.emudhra.esign.eSignVerificationResult;
+import com.emudhra.esign.eSignVerifier;
+
+import java.nio.file.Files;
+import java.nio.file.Paths;
+
+public class VerifyStoredSignature {
+
+    public static void main(String[] args) throws Exception {
+        String aspId      = "YOUR_ASP_ID";
+        String eSignV3Url = "https://gateway.emudhra.com/eSign/V3";
+        String eSignV2Url = "https://gateway.emudhra.com/eSign/V2";
+        String pfxPath    = "C:/certs/asp.pfx";
+        String pfxPass    = "changeit";
+        String pfxAlias   = "aspalias";
+
+        // The two things you stored at signing time.
+        String sha256Hex     = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+        String esignRespXml  = new String(Files.readAllBytes(Paths.get("response.xml")), "UTF-8");
+
+        eSign sdk = new eSign(aspId, eSignV3Url, eSignV2Url, pfxPath, pfxPass, pfxAlias);
+
+        // Optional: the eMudhra UAT OCSP responder is slow, so cap the wait.
+        eSignVerifier.setHttpTimeouts(5000, 20000);
+
+        eSignVerificationResult v = sdk.verifyEsignResponseHash(sha256Hex, esignRespXml, true);
+
+        System.out.println("Valid              : " + v.isValid());
+        System.out.println("Signature verifies : " + v.isSignatureValid());
+        System.out.println("Hash matches       : " + v.isHashMatched());
+        System.out.println("Signer             : " + v.getSignerSubject());
+        System.out.println("Issuer             : " + v.getIssuerSubject());
+        System.out.println("Serial             : " + v.getSerialNumberHex());
+        System.out.println("Signed at          : " + v.getSigningTime());
+        System.out.println("Cert valid window  : " + v.getCertNotBefore() + " .. " + v.getCertNotAfter());
+        System.out.println("Cert valid then    : " + v.isCertificateTimeValid()
+                                                   + " (checked at " + v.getValidityCheckedAt() + ")");
+        System.out.println("Revocation         : " + v.getRevocationStatus()
+                                                   + " via " + v.getRevocationMethod()
+                                                   + " (" + v.getRevocationSource() + ")");
+        System.out.println("Transaction        : " + v.getTransactionId() + " doc " + v.getDocId());
+        System.out.println("Response XML sig   : " + v.getResponseSignatureValid()
+                                                   + " - " + v.getResponseSignatureNote());
+
+        if (!v.isValid()) {
+            System.out.println("REJECTED: " + v.getErrorMessage());
+        }
+        // Or just print everything at once:
+        System.out.println(v);
+    }
+}
+```
+
+Typical output for a good signature verified long after the OTP certificate expired:
+
+```
+Valid              : true
+Signature verifies : true
+Hash matches       : true
+Signer             : CN=Ravi Kumar,ST=Karnataka,...
+Signed at          : Mon Sep 08 11:42:17 IST 2026
+Cert valid window  : Mon Sep 08 11:40:02 IST 2026 .. Mon Sep 08 12:10:02 IST 2026
+Cert valid then    : true (checked at Mon Sep 08 11:42:17 IST 2026)
+Revocation         : GOOD via OCSP (http://ocsp.emudhra.com)
+```
+
+Note the certificate had already expired by wall-clock time — `isCertificateTimeValid()` is
+`true` because it was evaluated at the signing time, not now.
+
+### Verifying without the response XML
+
+If you kept only the PKCS#7 (for example `ReturnDocument.getSignedData()` from a hash-mode
+signing), pass it directly. The gateway-response fields stay `null`, everything else works
+the same:
+
+```java
+eSignVerificationResult v = sdk.verifyEsignResponseHash(myOwnSha256Hex, pkcs7Base64, false);
+
+if (v.isValid()) {
+    System.out.println("Signed by " + v.getSignerSubject() + " at " + v.getSigningTime());
+}
+```
+
+### Deciding what to do with the result
+
+`isValid()` is the pass/fail your business logic should key on. Add a stricter revocation
+rule only if your policy needs one:
+
+```java
+eSignVerificationResult v = sdk.verifyEsignResponseHash(hash, respXml, true);
+
+if (!v.isValid()) {
+    throw new IllegalStateException("Signature rejected: " + v.getErrorMessage());
+}
+
+// Stricter than isValid(): demand a positive revocation answer, not merely "not revoked".
+if (v.getRevocationStatus() != eSignVerificationResult.RevocationStatus.GOOD) {
+    throw new IllegalStateException("Revocation status is "
+            + v.getRevocationStatus() + ": " + v.getRevocationMessage());
+}
+
+// Optional: prove the response XML was not altered in transit.
+if (Boolean.FALSE.equals(v.getResponseSignatureValid())) {
+    throw new IllegalStateException("Response XML signature failed: " + v.getResponseSignatureNote());
+}
+```
+
+### Multi-document responses
+
+When the response carries several `DocSignature` elements, the SDK picks the one whose signed
+digest equals `sha256Hex`, so you do not have to pass a document id. Call the method once per
+hash.
+
+### Network timeouts
+
+OCSP, CRL and CA-issuer downloads default to a 15-second connect and 45-second read timeout.
+Adjust them globally — the setting is static and applies to every verification in the JVM:
+
+```java
+eSignVerifier.setHttpTimeouts(5000, 20000);   // connect ms, read ms
+```
+
+---
+
+## Signature Content Position
+
+`setTextContentPosition(eSign.Coordinates)` controls where text is anchored inside the signature box. It works for `StandardSignature` and the Aadhaar stamp. It has no effect on `OneLiner` or the image-based types (`SignatureImage`, `advanceSignature`, `ColoredGraphic`, `BackgroundImage`).
+
+### Position values
+
+| Value | Anchor |
+|---|---|
+| `TopLeft` *(default)* | top-left corner |
+| `TopMiddle` | top, horizontally centred |
+| `TopRight` | top-right corner |
+| `CenterLeft` | vertically centred, left-aligned |
+| `CenterMiddle` | vertically and horizontally centred |
+| `CenterRight` | vertically centred, right-aligned |
+| `BottomLeft` | bottom-left corner |
+| `BottomMiddle` | bottom, horizontally centred |
+| `BottomRight` | bottom-right corner |
+
+### Usage
+
+```java
+eSignInput input = eSignInputBuilder.init()
+    .setDocBase64(pdfBase64)
+    .setDocInfo("Agreement")
+    .setSignedBy("John Doe")
+    .setAppearanceType(eSign.AppearanceType.StandardSignature)
+    .setPageTobeSigned(eSign.PageTobeSigned.Last)
+    .setCoordinates(eSign.Coordinates.BottomRight)
+    .setTextContentPosition(eSign.Coordinates.BottomLeft)  // text starts at bottom-left of box
+    .build();
+```
+
+The setting is stored in the pre-sign temp file and applied automatically in Phase 2 — no Phase 2 code changes are needed.
+
+### Interaction with Aadhaar patching
+
+When `setShowAadhaarOnSignature(true)` is also set, `textContentPosition` controls where the patched Aadhaar text (name, masked number, date) is placed within each signature field.
+
+---
+
 ## API Reference
 
 ### Constructors
@@ -875,7 +1596,7 @@ new eSign(ASPID, eSignURL, eSignURLV2, pfxpath, password, pfxAlias,
 | `logType` | eSignSettings.LogType | Logging level (AllLog, NoDebugLog, NoLog) |
 | `ProxyUserID` | String | Proxy authentication username |
 | `ProxyUserPassword` | String | Proxy authentication password |
-| `pdfViewerLicence` | String | PDF viewer licence key |
+| `pdfViewerLicence` | String | Optional emPDFViewer kit licence. Pass `null` — `getEncryptedPath()` no longer depends on it |
 | `SignatureContents` | int | Reserved space for signature in bytes (0 = default 21000) |
 
 ---
@@ -935,12 +1656,15 @@ eSignServiceReturn getGatewayParameter(
 
 ```java
 eSignServiceReturn getSigedDocument(String eSignResponse, String preSignedTempFile)
+eSignServiceReturn getSigedDocument(String eSignResponse, String preSignedTempFile,
+                                    AadhaarSignatureAppearance appearance)
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `eSignResponse` | String | Response XML from eMudhra callback |
 | `preSignedTempFile` | String | Path to pre-signed temp file from Phase 1 |
+| `appearance` | AadhaarSignatureAppearance | Optional. Controls the signer-details stamp; see [Customising the Aadhaar Appearance](#customising-the-aadhaar-appearance). `null` behaves like the two-argument form |
 
 **Returns:** `eSignServiceReturn` with `getReturnDocuments()` containing signed PDFs as Base64.
 
@@ -1056,6 +1780,25 @@ if (signed.getStatus() == 1) {
 
 ---
 
+#### `verifyEsignResponseHash()` - Verify a returned signature
+
+```java
+eSignVerificationResult verifyEsignResponseHash(
+    String sha256Hex,
+    String esignRespXml,
+    boolean checkRevocation
+)
+```
+
+Verifies the PKCS#7 returned by the gateway against the hash that was sent, reports the signer
+certificate, and optionally checks revocation over OCSP with a CRL fallback. Never throws —
+inspect `isValid()` and `getErrorMessage()`. See
+[Verifying a Signature](#verifying-a-signature) for the full field list.
+
+**Returns:** `eSignVerificationResult`.
+
+---
+
 #### `performBankKYC()` - Perform Bank KYC verification
 
 ```java
@@ -1124,12 +1867,37 @@ Builder for creating `eSignInput` objects. Start with `eSignInputBuilder.init()`
 | `setColoredGraphicInputs(ColoredGraphicInputs)` | ColoredGraphicInputs | Config for ColoredGraphic type |
 | `setCustomStyle(CustomStyle)` | CustomStyle | Custom font color styling |
 | `setBorderRequired(boolean)` | boolean | Show signature border |
-| `setTickRequired(boolean)` | boolean | Show tick mark on signature |
+| `setTickRequired(boolean)` | boolean | **Deprecated, no effect.** Kept for backward compatibility. The validity tick is drawn by the PDF viewer and cannot be stored in the PDF. |
 | `setPdfPassword(String)` | String | Password for encrypted PDFs |
-| `setPatchSignatureAppearance(boolean)` | boolean | Patch appearance after signing with signer name and masked Aadhaar from gateway cert (default: false) |
-| `setEncryptedAadhaarFlowEnabled(boolean)` | boolean | Enable the Encrypted Aadhaar flow (default: false). Must be paired with `setEncryptedAadhaarConfig` |
-| `setEncryptedAadhaarConfig(EncryptedAadhaarConfig)` | EncryptedAadhaarConfig | Aadhaar number + RSA public-key certificate for the Encrypted Aadhaar flow |
+| `setShowAadhaarOnSignature(boolean)` | boolean | When `true`, adds a locked stamp over the signature box after signing, showing the signer name and masked Aadhaar number from the gateway certificate; the Phase 1 `StandardSignature` box is left blank. Font size is auto-fitted. Default: `false`. See [Aadhaar Appearance Patching](#aadhaar-appearance-patching). |
+| `setPatchSignatureAppearance(boolean)` | boolean | Alias of `setShowAadhaarOnSignature(boolean)` |
+| `setTextContentPosition(Coordinates)` | Coordinates | Position of text within the signature box. Accepts any `eSign.Coordinates` value (`TopLeft`, `TopMiddle`, `TopRight`, `CenterLeft`, `CenterMiddle`, `CenterRight`, `BottomLeft`, `BottomMiddle`, `BottomRight`). Default: `TopLeft`. Applies to `StandardSignature` and the Aadhaar stamp; no effect on the other appearance types. |
+| `setEncryptedAadhaarFlowEnabled(boolean)` | boolean | Opt in to the Encrypted Aadhaar flow. Must be `true` for the encrypted flow to activate. Default: `false`. See [Encrypted Aadhaar Flow](#encrypted-aadhaar-flow). |
+| `setEncryptedAadhaarConfig(EncryptedAadhaarConfig)` | EncryptedAadhaarConfig | Aadhaar number and UIDAI public-key certificate for the Encrypted Aadhaar flow. Has no effect unless `setEncryptedAadhaarFlowEnabled(true)` is also set. |
 | `build()` | eSignInput | Build the final input object |
+
+---
+
+### EncryptedAadhaarConfig
+
+Configuration object for the [Encrypted Aadhaar Flow](#encrypted-aadhaar-flow). Create an instance, set the required fields, and pass it to `eSignInputBuilder.setEncryptedAadhaarConfig()`.
+
+```java
+EncryptedAadhaarConfig cfg = new EncryptedAadhaarConfig();
+cfg.setAadhaarNumber("123456789012");
+cfg.setCerFilePath("/path/to/uidai-public.cer");
+// OR
+cfg.setCerBase64(base64EncodedCerBytes);
+```
+
+| Method | Type | Description |
+|--------|------|-------------|
+| `setAadhaarNumber(String)` | String | 12-digit Aadhaar number. Digits only — no spaces, hyphens, or other separators. |
+| `setCerFilePath(String)` | String | Absolute or relative path to the UIDAI public-key CER file. Use this **or** `setCerBase64()`, not both. |
+| `setCerBase64(String)` | String | Base64 encoding of the raw CER file bytes (DER or PEM format). Use this **or** `setCerFilePath()`, not both. |
+| `getAadhaarNumber()` | String | Returns the configured Aadhaar number. |
+| `getCerFilePath()` | String | Returns the CER file path, or `null` if base64 was set. |
+| `getCerBase64()` | String | Returns the Base64 CER string, or `null` if a file path was set. |
 
 ---
 
@@ -1151,6 +1919,7 @@ Returned by all SDK methods.
 | `getErrorCode()` | String | Error code (ESS-XXX) on failure |
 | `getErrorMessage()` | String | Human-readable error message |
 | `getEnCryptedPath()` | String | Encrypted path (from getEncryptedPath()) |
+| `getSignerCertificateInfo()` | SignerCertificateInfo | Parsed signer certificate (Phase 2); null when absent or unparsable. See [Signer Certificate Details](#signer-certificate-details) |
 
 ---
 
@@ -1353,6 +2122,6 @@ ant compile
 ant clean
 ```
 
-Output JAR: `dist/eSignASPLibrary5_12.jar`
+Output JAR: `dist/eSignASPLibrary5_13.jar`
 
 The compiled JAR and all dependency JARs in `lib/` must be on your classpath.

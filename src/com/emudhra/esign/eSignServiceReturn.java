@@ -192,4 +192,19 @@ public final class eSignServiceReturn {
     protected void setReturnDocuments(ArrayList<ReturnDocument> returnDocuments) {
         this.returnDocuments = returnDocuments;
     }
+
+    private SignerCertificateInfo signerCertificateInfo;
+
+    /**
+     * Details of the signer certificate returned by the gateway in
+     * {@code UserX509Certificate}. Populated by {@code getSigedDocument};
+     * null when absent or unparsable.
+     */
+    public SignerCertificateInfo getSignerCertificateInfo() {
+        return signerCertificateInfo;
+    }
+
+    protected void setSignerCertificateInfo(SignerCertificateInfo signerCertificateInfo) {
+        this.signerCertificateInfo = signerCertificateInfo;
+    }
 }

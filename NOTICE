@@ -23,7 +23,7 @@ Copyright (c) 2002-2024 The Apache Software Foundation
 =======================================================================
 Apache Batik - SVG Toolkit
 =======================================================================
-Version: 1.13
+Version: 1.17
 License: Apache License, Version 2.0
 Website: https://xmlgraphics.apache.org/batik/
 Copyright (c) 1999-2020 The Apache Software Foundation
@@ -31,7 +31,7 @@ Copyright (c) 1999-2020 The Apache Software Foundation
 =======================================================================
 Apache Commons IO
 =======================================================================
-Version: 2.4
+Version: 2.14.0
 License: Apache License, Version 2.0
 Website: https://commons.apache.org/proper/commons-io/
 Copyright (c) 2002-2012 The Apache Software Foundation
@@ -39,7 +39,7 @@ Copyright (c) 2002-2012 The Apache Software Foundation
 =======================================================================
 Apache XML Security for Java (xmlsec)
 =======================================================================
-Version: 2.3.0
+Version: 2.3.4
 License: Apache License, Version 2.0
 Website: https://santuario.apache.org/
 Copyright (c) 1999-2021 The Apache Software Foundation
@@ -47,7 +47,7 @@ Copyright (c) 1999-2021 The Apache Software Foundation
 =======================================================================
 Apache XMLGraphics Commons
 =======================================================================
-Version: 2.4
+Version: 2.9
 License: Apache License, Version 2.0
 Website: https://xmlgraphics.apache.org/commons/
 Copyright (c) 2006-2019 The Apache Software Foundation
@@ -55,7 +55,7 @@ Copyright (c) 2006-2019 The Apache Software Foundation
 =======================================================================
 Apache Log4j API
 =======================================================================
-Version: 2.20.0
+Version: 2.25.3
 License: Apache License, Version 2.0
 Website: https://logging.apache.org/log4j/2.x/
 Copyright (c) 1999-2023 The Apache Software Foundation
@@ -63,7 +63,7 @@ Copyright (c) 1999-2023 The Apache Software Foundation
 =======================================================================
 Woodstox XML Processor
 =======================================================================
-Version: 5.2.1
+Version: 6.4.0
 License: Apache License, Version 2.0
 Website: https://github.com/FasterXML/woodstox
 Copyright (c) FasterXML, LLC
@@ -71,7 +71,7 @@ Copyright (c) FasterXML, LLC
 =======================================================================
 Stax2 API
 =======================================================================
-Version: 4.2
+Version: 4.2.1
 License: BSD 2-Clause License
 Website: https://github.com/FasterXML/stax2-api
 Copyright (c) FasterXML, LLC
@@ -113,14 +113,14 @@ Copyright (c) World Wide Web Consortium
 =======================================================================
 Bouncy Castle Cryptography Library
 =======================================================================
-Version: 1.70 (bcprov-jdk15on, bcpkix-jdk15on)
+Version: 1.70 (embedded as source under org.emcastle.*)
 License: MIT License
 Website: https://www.bouncycastle.org/
 Copyright (c) 2000-2021 The Legion of the Bouncy Castle Inc.
 
-Note: A fork of Bouncy Castle is also embedded as source under the
-org.emcastle.* namespace and is used for SHA-256 hashing, X.509
-certificate parsing, and cryptographic utility functions.
+A modified fork of Bouncy Castle is embedded as source, repackaged under
+the org.emcastle.* namespace. It is used for CMS/PKCS#7, X.509 certificate
+parsing, OCSP/CRL checks and hashing.
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),

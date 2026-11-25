@@ -57,10 +57,8 @@ public class Test {
 
         // Common appearance/signer fields are repeated in every case so each branch is a
         // complete, copy-pasteable example.
-        // GOTCHA: prepareDocuments() rejects an EMPTY pageLevelCoordinates with ESS-120
-        // "Unable to find content" BEFORE the named Coordinates value is resolved, so even
-        // fixed-corner modes must pass a non-empty (dummy) pageLevelCoordinates string just
-        // to clear that guard — the named Coordinates box still does the actual placement.
+        // Note: fixed-corner modes no longer need a pageLevelCoordinates value; the dummy
+        // strings below are harmless and kept only so each branch stays copy-pasteable.
         eSignInput input;
         switch (mode) {
             case "first": // first page only, bottom-right corner

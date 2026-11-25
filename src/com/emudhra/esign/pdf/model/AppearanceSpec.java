@@ -10,7 +10,6 @@ public final class AppearanceSpec {
     public final String layer2Text;
     public final int fontSize;
     public final PdfColor fontColor;
-    public final boolean acro6Layers;
     public final boolean certified;
 
     // OneLiner
@@ -31,7 +30,7 @@ public final class AppearanceSpec {
 
     public AppearanceSpec(AppearanceType mode,
                           String layer2Text, int fontSize, PdfColor fontColor,
-                          boolean acro6Layers, boolean certified,
+                          boolean certified,
                           String oneLinerText,
                           byte[] imageBytes,
                           ImageType advanceImageType, byte[] advanceSvgBytes,
@@ -41,7 +40,6 @@ public final class AppearanceSpec {
         this.layer2Text = layer2Text;
         this.fontSize = fontSize;
         this.fontColor = fontColor;
-        this.acro6Layers = acro6Layers;
         this.certified = certified;
         this.oneLinerText = oneLinerText;
         this.imageBytes = imageBytes;
@@ -51,5 +49,16 @@ public final class AppearanceSpec {
         this.rightSideText = rightSideText;
         this.rightBorderRgb = rightBorderRgb;
         this.leftBorderRgb = leftBorderRgb;
+    }
+
+    /** StandardSignature: where the text block sits in the box. */
+    public com.emudhra.esign.eSign.Coordinates textPosition = com.emudhra.esign.eSign.Coordinates.TopLeft;
+    /** StandardSignature: draw no text (the post-sign overlay carries it). */
+    public boolean blankText;
+
+    public AppearanceSpec withTextLayout(com.emudhra.esign.eSign.Coordinates position, boolean blank) {
+        if (position != null) this.textPosition = position;
+        this.blankText = blank;
+        return this;
     }
 }
